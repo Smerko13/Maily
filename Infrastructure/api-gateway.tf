@@ -4,10 +4,17 @@ resource "aws_apigatewayv2_api" "maily_http_api" {
   name        = "Maily-Backend-API"
   description = "API Gateway for Maily Backend"
   protocol_type = "HTTP"
-    tags = {
-        Project     = "Maily"
-        Environment = "Development"
-    }
+
+  cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers = ["content-type"]
+  }
+
+  tags = {
+      Project     = "Maily"
+      Environment = "Development"
+  }
 }
 
 resource "aws_apigatewayv2_integration" "backend_lambda_integration" {
