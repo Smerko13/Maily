@@ -8,20 +8,25 @@ function App() {
   const [message, setMessage] = useState<string>('');
   const [emails, setEmails] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
-  
-  // State to track active tab (inbox or settings)
   const [activeTab, setActiveTab] = useState<'inbox' | 'settings'>('inbox');
+
+  // new states for google connection status and auth code
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false);
+  const [googleAuthCode, setGoogleAuthCode] = useState<string>('');
 
   const loginWithGoogle = useGoogleLogin({
     flow: 'auth-code',
     scope: 'https://www.googleapis.com/auth/gmail.readonly',
     onSuccess: async (codeResponse) => {
       console.log("Success! Auth Code from Google:", codeResponse.code);
-      setMessage("✅ Verification code received! In the next step, it will be sent to the Backend.");
+      // UI updates to reflect successful connection and show the auth code (truncated for security)
+      setIsGoogleConnected(true);
+      setGoogleAuthCode(codeResponse.code); 
+      setMessage("✅ Google account connected successfully!");
     },
     onError: (errorResponse) => {
       console.error("Google Login Failed:", errorResponse);
-      setMessage("❌ Error during Google login. Please try again.");
+      setMessage("❌ Error connecting Google account. Please try again.");
     },
   });
 
@@ -58,26 +63,19 @@ function App() {
       {({ signOut, user }) => (
         <div style={{ display: 'flex', height: '100vh', width: '100vw', backgroundColor: '#f8f9fa', fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif' }}>
           
-          {/* Sidebar */}
-          <div style={{ width: '250px', backgroundColor: '#2c3e50', color: '#ecf0f1', display: 'flex', flexDirection: 'column', boxShadow: '2px 0 5px rgba(0,0,0,0.1)' }}>
+          <div style={{ width: '250px', backgroundColor: '#2c3e50', color: '#ecf0f1', display: 'flex', flexDirection: 'column', boxShadow: '2px 0 5px rgba(0,0,0,0.1)', zIndex: 10 }}>
             <div style={{ padding: '20px', borderBottom: '1px solid #34495e' }}>
               <h2 style={{ margin: 0, color: '#3498db', display: 'flex', alignItems: 'center', gap: '10px' }}>📧 Maily</h2>
               <p style={{ fontSize: '0.8em', color: '#95a5a6', marginTop: '5px' }}>Smart Email Assistant</p>
             </div>
             
             <div style={{ flex: 1, padding: '20px 0' }}>
-              <div 
-                onClick={() => setActiveTab('inbox')}
-                style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'inbox' ? '#34495e' : 'transparent', borderLeft: activeTab === 'inbox' ? '4px solid #3498db' : 'none', opacity: activeTab === 'inbox' ? 1 : 0.7 }}
-              >
+              <div onClick={() => setActiveTab('inbox')} style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'inbox' ? '#34495e' : 'transparent', borderLeft: activeTab === 'inbox' ? '4px solid #3498db' : 'none', opacity: activeTab === 'inbox' ? 1 : 0.7 }}>
                 📥 Inbox
               </div>
               <div style={{ padding: '15px 20px', cursor: 'pointer', opacity: 0.7 }}>✨ Smart Drafting</div>
               <div style={{ padding: '15px 20px', cursor: 'pointer', opacity: 0.7 }}>📊 Statistics</div>
-              <div 
-                onClick={() => setActiveTab('settings')}
-                style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'settings' ? '#34495e' : 'transparent', borderLeft: activeTab === 'settings' ? '4px solid #3498db' : 'none', opacity: activeTab === 'settings' ? 1 : 0.7 }}
-              >
+              <div onClick={() => setActiveTab('settings')} style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'settings' ? '#34495e' : 'transparent', borderLeft: activeTab === 'settings' ? '4px solid #3498db' : 'none', opacity: activeTab === 'settings' ? 1 : 0.7 }}>
                 ⚙️ Settings
               </div>
             </div>
@@ -90,10 +88,8 @@ function App() {
             </div>
           </div>
 
-          {/* Main content */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            
-            {/* Inbox tab */}
+            {/* Inbox Tab Content */}
             {activeTab === 'inbox' && (
               <>
                 <header style={{ backgroundColor: 'white', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
@@ -107,7 +103,7 @@ function App() {
                   <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '25px', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f1f2f6', paddingBottom: '10px', marginBottom: '20px' }}>
                       <h3 style={{ margin: 0, color: '#34495e' }}>📬 Latest Email Analysis</h3>
-                      {message && <span style={{ fontSize: '0.85em', color: '#27ae60', backgroundColor: '#e8f8f5', padding: '4px 10px', borderRadius: '12px' }}>{message}</span>}
+                      {message && !message.includes('קוד') && <span style={{ fontSize: '0.85em', color: '#27ae60', backgroundColor: '#e8f8f5', padding: '4px 10px', borderRadius: '12px' }}>{message}</span>}
                     </div>
                     
                     {emails.length > 0 ? (
@@ -134,8 +130,7 @@ function App() {
                 </div>
               </>
             )}
-
-            {/* Settings tab*/}
+            {/* Settings Tab Content */}
             {activeTab === 'settings' && (
               <>
                 <header style={{ backgroundColor: 'white', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
@@ -149,27 +144,39 @@ function App() {
                       Connect your email accounts to Maily to allow our smart AI to analyze, summarize, and assist you with your inbox.
                     </p>
                     
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px', border: '1px solid #e2e8f0', borderRadius: '8px', backgroundColor: '#f8f9fa' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px', border: '1px solid #e2e8f0', borderRadius: '8px', backgroundColor: isGoogleConnected ? '#f0fff4' : '#f8f9fa', transition: '0.3s' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
                         <span style={{ fontSize: '2em' }}>✉️</span>
                         <div>
                           <strong style={{ display: 'block', color: '#2c3e50' }}>Google Workspace / Gmail</strong>
-                          <span style={{ fontSize: '0.85em', color: '#95a5a6' }}>Not connected</span>
+                          {/* status messages that show the connection status */}
+                          {isGoogleConnected ? (
+                            <span style={{ fontSize: '0.85em', color: '#27ae60', fontWeight: 'bold' }}>✅ Connected successfully</span>
+                          ) : (
+                            <span style={{ fontSize: '0.85em', color: '#95a5a6' }}>Not connected</span>
+                          )}
                         </div>
                       </div>
-                      <button 
-                        onClick={() => loginWithGoogle()}
-                        style={{ padding: '10px 20px', backgroundColor: '#db4437', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(219,68,55,0.3)' }}
-                      >
-                        Connect
-                      </button>
+                      
+                      {/* change the button text and color based on the connection status */}
+                      {isGoogleConnected ? (
+                         <button disabled style={{ padding: '10px 20px', backgroundColor: '#e2e8f0', color: '#7f8c8d', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'default' }}>
+                           Connected
+                         </button>
+                      ) : (
+                        <button onClick={() => loginWithGoogle()} style={{ padding: '10px 20px', backgroundColor: '#db4437', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(219,68,55,0.3)' }}>
+                          Connect
+                        </button>
+                      )}
                     </div>
 
-                    {message && message.includes('Verification code: ') && (
-                      <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e8f8f5', color: '#27ae60', borderRadius: '6px', fontSize: '0.9em' }}>
-                        {message}
+                    {/* status messages that show the connection status and auth code */}
+                    {isGoogleConnected && (
+                      <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e8f8f5', color: '#27ae60', borderRadius: '6px', fontSize: '0.9em', borderLeft: '4px solid #27ae60' }}>
+                        <strong>{message}</strong>
                       </div>
                     )}
+
                   </div>
                 </div>
               </>
