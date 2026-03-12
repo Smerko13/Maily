@@ -1,9 +1,10 @@
 import json
 import boto3
 
-dynamodb = boto3.resource('dynamodb')
-table = dynamodb.Table('Maily-Emails')
+dynamodb = boto3.resource('dynamodb')  # Create a DynamoDB resource using boto3, this allows us to interact with DynamoDB tables in our Lambda function
+table = dynamodb.Table('Maily-Emails') # Reference to the DynamoDB table named 'Maily-Emails', this is where we will be reading data from in our Lambda function
 
+# This is the main handler function for the Lambda, it will be invoked when a request is made to the API Gateway endpoint that is integrated with this Lambda function
 def lambda_handler(event, context):
     try:
         # Read all items from the DynamoDB table

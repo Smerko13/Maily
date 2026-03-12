@@ -17,7 +17,7 @@ resource "aws_cognito_user_pool" "user_pool" {
   auto_verified_attributes = ["email"]
   username_attributes = ["email"]
 
-  # Set up MFA (optional)
+  # We want to turn off MFA (as of now)
   mfa_configuration = "OFF"
 
     tags = {
