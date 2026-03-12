@@ -13,18 +13,48 @@ function App() {
   const [googleAuthCode, setGoogleAuthCode] = useState<string>(''); // state to hold the Google OAuth authorization code received after a successful login, this code can be used to exchange for access tokens that allow us to access the user's Gmail data, we will display this code in the UI (truncated for security) to confirm the connection was successful
 
   // Set up the Google login flow using the useGoogleLogin hook, this hook provides a function that we can call to initiate the Google OAuth flow, we specify the flow type as 'auth-code' to receive an authorization code, and we request the scope for read-only access to Gmail, we also define onSuccess and onError callbacks to handle the response from Google and update our UI accordingly
-  const loginWithGoogle = useGoogleLogin({
+ const loginWithGoogle = useGoogleLogin({
     flow: 'auth-code',
     scope: 'https://www.googleapis.com/auth/gmail.readonly',
     onSuccess: async (codeResponse) => {
       console.log("Success! Auth Code from Google:", codeResponse.code);
       setIsGoogleConnected(true);
       setGoogleAuthCode(codeResponse.code); 
-      setMessage("✅ Google account connected successfully!");
+      setMessage("⏳ Auth code received! Connecting to Google...");
+
+      try {
+        const session = await fetchAuthSession();
+        const token = session.tokens?.idToken?.toString();
+
+        const apiUrl = 'https://9h964a0yle.execute-api.eu-central-1.amazonaws.com/auth/google';
+        
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ code: codeResponse.code }) 
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log("Backend response:", data);
+        
+        setMessage("✅ Access token received from backend! Google account connected successfully.");
+        
+      } catch (error) {
+        console.error('Error sending code to backend:', error);
+        setMessage('❌ Error connecting to Google. Please try again.');
+        setIsGoogleConnected(false); 
+      }
     },
     onError: (errorResponse) => {
       console.error("Google Login Failed:", errorResponse);
-      setMessage("❌ Error connecting Google account. Please try again.");
+      setMessage("❌ Error connecting to Google. Please try again.");
     },
   });
 
