@@ -133,7 +133,7 @@ function App() {
                   <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '25px', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f1f2f6', paddingBottom: '10px', marginBottom: '20px' }}>
                       <h3 style={{ margin: 0, color: '#34495e' }}>📬 Latest Email Analysis</h3>
-                      {message && !message.includes('קוד') && <span style={{ fontSize: '0.85em', color: '#27ae60', backgroundColor: '#e8f8f5', padding: '4px 10px', borderRadius: '12px' }}>{message}</span>}
+                      {message && !message.includes('code') && <span style={{ fontSize: '0.85em', color: '#27ae60', backgroundColor: '#e8f8f5', padding: '4px 10px', borderRadius: '12px' }}>{message}</span>}
                     </div>
                     
                     {emails.length > 0 ? (
