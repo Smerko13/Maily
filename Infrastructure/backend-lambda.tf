@@ -19,7 +19,7 @@ resource "aws_iam_role" "maily_backend_lambda_role" {
 // Define an IAM policy that allows the backend Lambda function to access the DynamoDB table, this policy will be attached to the IAM role of the Lambda function, the policy allows various DynamoDB actions (like PutItem, GetItem, etc.) on the specific DynamoDB table used by Maily
 resource "aws_iam_policy" "dynamo_db_access_policy" {
     name = "maily_dynamodb_access_policy"
-    description = "Policy to allow Lambda function to access Maily DynamoDB table"
+    description = "Policy to allow Lambda function to access Maily DynamoDB tables"
     policy = jsonencode({
         Version = "2012-10-17"
         Statement = [
@@ -33,7 +33,10 @@ resource "aws_iam_policy" "dynamo_db_access_policy" {
                     "dynamodb:Query"
                 ]
                 Effect = "Allow"
-                Resource = aws_dynamodb_table.maily_emails.arn
+                Resource = [
+                    aws_dynamodb_table.maily_emails.arn,
+                    aws_dynamodb_table.maily_users.arn
+                ]
             }
         ]
     })
@@ -67,6 +70,15 @@ resource "aws_lambda_function" "maily_backend_lambda" {
 
     handler = "backend_lambda.lambda_handler"
     runtime = "python3.9"
+    timeout = 30
 
     source_code_hash = data.archive_file.backend_lambda_zip.output_base64sha256
+
+    environment {
+      variables = {
+        GOOGLE_CLIENT_ID     = var.google_client_id
+        GOOGLE_CLIENT_SECRET = var.google_client_secret
+        GOOGLE_REDIRECT_URI  = "postmessage"
+        }
+    }
 }

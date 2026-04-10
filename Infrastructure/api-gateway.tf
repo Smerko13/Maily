@@ -36,6 +36,15 @@ resource "aws_apigatewayv2_route" "hello_route" {
     authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
+resource "aws_apigatewayv2_route" "sync_route" {
+    api_id = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "POST /sync"
+    target = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
 // Define a default stage for the API Gateway, this stage will be used to deploy the API and make it accessible to clients, auto_deploy is set to true so that any changes to the API will be automatically deployed to this stage
 resource "aws_apigatewayv2_stage" "default_stage" {
     api_id = aws_apigatewayv2_api.maily_http_api.id

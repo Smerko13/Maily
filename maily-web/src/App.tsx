@@ -9,8 +9,9 @@ function App() {
   const [emails, setEmails] = useState<any[]>([]); // state to hold the list of emails fetched from the backend, this will be an array of email objects that we will display in the inbox tab of the UI
   const [loading, setLoading] = useState<boolean>(false); // state to indicate whether we are currently loading data from the backend, this will be used to disable the sync button and show a loading state while we are fetching data
   const [activeTab, setActiveTab] = useState<'inbox' | 'settings'>('inbox'); // state to track which tab is currently active in the UI, this will allow us to conditionally render the content for the inbox and settings tabs based on the user's selection
-  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean>(false); // state to track whether the user has successfully connected their Google account, this will be used to update the UI and show the connection status in the settings tab
-  const [googleAuthCode, setGoogleAuthCode] = useState<string>(''); // state to hold the Google OAuth authorization code received after a successful login, this code can be used to exchange for access tokens that allow us to access the user's Gmail data, we will display this code in the UI (truncated for security) to confirm the connection was successful
+  const [isGoogleConnected, setIsGoogleConnected] = useState(() => {
+  return localStorage.getItem('isGoogleConnected') === 'true';
+}); // state to track whether the user has successfully connected their Google account, this will be used to update the UI and show the connection status in the settings tab
 
   // Set up the Google login flow using the useGoogleLogin hook, this hook provides a function that we can call to initiate the Google OAuth flow, we specify the flow type as 'auth-code' to receive an authorization code, and we request the scope for read-only access to Gmail, we also define onSuccess and onError callbacks to handle the response from Google and update our UI accordingly
  const loginWithGoogle = useGoogleLogin({
@@ -18,8 +19,7 @@ function App() {
     scope: 'https://www.googleapis.com/auth/gmail.readonly',
     onSuccess: async (codeResponse) => {
       console.log("Success! Auth Code from Google:", codeResponse.code);
-      setIsGoogleConnected(true);
-      setGoogleAuthCode(codeResponse.code); 
+      setMessage("⏳ Auth code received! Connecting to Google...");
       setMessage("⏳ Auth code received! Connecting to Google...");
 
       try {
@@ -38,8 +38,12 @@ function App() {
         });
         
         if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+          const errorData = await response.text();
+          throw new Error(`HTTP error! status: ${response.status}, details: ${errorData}`);
         }
+
+        localStorage.setItem('isGoogleConnected', 'true');
+        setIsGoogleConnected(true);
         
         const data = await response.json();
         console.log("Backend response:", data);
@@ -50,6 +54,7 @@ function App() {
         console.error('Error sending code to backend:', error);
         setMessage('❌ Error connecting to Google. Please try again.');
         setIsGoogleConnected(false); 
+        localStorage.removeItem('isGoogleConnected');
       }
     },
     onError: (errorResponse) => {
@@ -58,25 +63,23 @@ function App() {
     },
   });
 
-  // Function to fetch data from the backend API, this function will be called when the user clicks the "Sync with Server" button in the inbox tab, it retrieves the current authentication session to get the user's ID token, then makes a GET request to our backend API endpoint with the token included in the Authorization header, if the request is successful it updates the message and emails state with the response data, if there is an error it logs it and updates the message state to inform the user
+  // Calls POST /sync which fetches the latest emails from Gmail, saves them to DynamoDB, and returns them to display in the inbox
   const fetchFromBackend = async () => {
     setLoading(true);
     try {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
-      const apiUrl = 'https://9h964a0yle.execute-api.eu-central-1.amazonaws.com/hello';
-      // Make a GET request to the backend API with the token in the Authorization header
+      const apiUrl = 'https://9h964a0yle.execute-api.eu-central-1.amazonaws.com/sync';
       const response = await fetch(apiUrl, {
-        method: 'GET',
+        method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       });
-      // Check if the response is successful, if not throw an error to be caught in the catch block
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      
+
       setMessage(data.message);
       if (data.emails) setEmails(data.emails);
     } catch (error) {
