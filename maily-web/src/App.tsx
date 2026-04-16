@@ -24,6 +24,7 @@ function App() {
       try {
         const session = await fetchAuthSession();
         const token = session.tokens?.idToken?.toString();
+        if (!token) throw new Error('No auth token available');
 
         const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/auth/google`;
         
@@ -68,6 +69,8 @@ function App() {
     try {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+      
       const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/sync`;
       const response = await fetch(apiUrl, {
         method: 'POST',
