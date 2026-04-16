@@ -114,8 +114,8 @@ function App() {
               <div onClick={() => setActiveTab('inbox')} style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'inbox' ? '#34495e' : 'transparent', borderLeft: activeTab === 'inbox' ? '4px solid #3498db' : 'none', opacity: activeTab === 'inbox' ? 1 : 0.7 }}>
                 📥 Inbox
               </div>
-              <div style={{ padding: '15px 20px', cursor: 'pointer', opacity: 0.7 }}>✨ Smart Drafting</div>
-              <div style={{ padding: '15px 20px', cursor: 'pointer', opacity: 0.7 }}>📊 Statistics</div>
+              <div style={{ padding: '15px 20px', cursor: 'default', opacity: 0.7 }}>✨ Smart Drafting</div>
+              <div style={{ padding: '15px 20px', cursor: 'default', opacity: 0.7 }}>📊 Statistics</div>
               <div onClick={() => setActiveTab('settings')} style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'settings' ? '#34495e' : 'transparent', borderLeft: activeTab === 'settings' ? '4px solid #3498db' : 'none', opacity: activeTab === 'settings' ? 1 : 0.7 }}>
                 ⚙️ Settings
               </div>
