@@ -4,9 +4,15 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
 import './App.css';
 
+interface Email {
+  subject: string;
+  content: string;
+  status?: string;
+}
+
 function App() {
   const [message, setMessage] = useState<string>(''); // a string shown to the user (e.g. "✅ Connected!")
-  const [emails, setEmails] = useState<any[]>([]); // the array of email objects displayed in the inbox
+  const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
   const [activeTab, setActiveTab] = useState<'inbox' | 'settings'>('inbox'); // which tab is visible; TypeScript restricts it to only 'inbox' or 'settings'
   const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
@@ -70,7 +76,7 @@ function App() {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
       if (!token) throw new Error('No auth token available');
-      
+
       const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/sync`;
       const response = await fetch(apiUrl, {
         method: 'POST',
