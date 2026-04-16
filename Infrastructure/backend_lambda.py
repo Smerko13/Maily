@@ -13,7 +13,7 @@ def lambda_handler(event, context):
     path = event.get('rawPath', '')
 
     if http_method == 'GET' and path == '/hello':
-        return handle_get_emails()
+        return handle_get_emails(event)
     elif http_method == 'POST' and path == '/sync':
         return handle_sync_emails(event)
     else:
@@ -22,9 +22,23 @@ def lambda_handler(event, context):
             "body": json.dumps({"message": f"Route not found! Method: {http_method}, Path: {path}"})
         }
 
-def handle_get_emails():
+def handle_get_emails(event):
     try:
-        response = table.scan()
+        # Extract the user ID from the Cognito JWT claims
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {"statusCode": 400, "body": json.dumps({"message": "Could not find user ID"})}
+
+        # Query only this user's emails
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+        )
         items = response.get('Items', [])
         return {
             "statusCode": 200,
