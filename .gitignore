@@ -15,3 +15,6 @@ Infrastructure/terraform.tfvars
 Infrastructure/*.tfstate
 Infrastructure/*.tfstate.*
 Infrastructure/.terraform/
+
+# Environment variable file
+.env
