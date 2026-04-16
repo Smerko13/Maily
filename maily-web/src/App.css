@@ -1,0 +1,312 @@
+/* ── Layout ── */
+.app-layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #f8f9fa;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 250px;
+  background-color: #2c3e50;
+  color: #ecf0f1;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+.sidebar-header {
+  padding: 20px;
+  border-bottom: 1px solid #34495e;
+}
+
+.sidebar-logo {
+  margin: 0;
+  color: #3498db;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-subtitle {
+  font-size: 0.8em;
+  color: #95a5a6;
+  margin-top: 5px;
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 20px 0;
+}
+
+.nav-item {
+  padding: 15px 20px;
+  cursor: pointer;
+  opacity: 0.7;
+  border-left: 4px solid transparent;
+}
+
+.nav-item:hover {
+  background-color: #34495e;
+  opacity: 0.9;
+}
+
+.nav-item.active {
+  background-color: #34495e;
+  border-left: 4px solid #3498db;
+  opacity: 1;
+}
+
+.nav-item-disabled {
+  padding: 15px 20px;
+  cursor: default;
+  opacity: 0.7;
+}
+
+.sidebar-footer {
+  padding: 20px;
+  border-top: 1px solid #34495e;
+  background-color: #243342;
+}
+
+.sidebar-user {
+  margin: 0 0 10px 0;
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+.btn-logout {
+  width: 100%;
+  padding: 8px;
+  background-color: transparent;
+  color: #e74c3c;
+  border: 1px solid #e74c3c;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+.btn-logout:hover {
+  background-color: #e74c3c;
+  color: white;
+}
+
+/* ── Main content ── */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tab-header {
+  background-color: white;
+  padding: 20px 40px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.tab-header h1 {
+  margin: 0;
+  font-size: 1.5em;
+  color: #2c3e50;
+}
+
+.tab-body {
+  padding: 40px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── Sync button ── */
+.btn-sync {
+  padding: 10px 20px;
+  background-color: #3498db;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.btn-sync:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* ── Inbox ── */
+.email-card {
+  background-color: white;
+  border-radius: 10px;
+  padding: 25px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+}
+
+.email-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 2px solid #f1f2f6;
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+}
+
+.email-card-header h3 {
+  margin: 0;
+  color: #34495e;
+}
+
+.status-badge {
+  font-size: 0.85em;
+  color: #27ae60;
+  background-color: #e8f8f5;
+  padding: 4px 10px;
+  border-radius: 12px;
+}
+
+.email-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.email-item {
+  padding: 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background-color: #fdfdfd;
+}
+
+.email-item-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.email-subject {
+  font-size: 1.1em;
+  color: #2c3e50;
+}
+
+.email-status {
+  font-size: 0.8em;
+  color: #8e44ad;
+  background-color: #f4ecf8;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.email-content {
+  margin: 0;
+  color: #7f8c8d;
+  line-height: 1.5;
+}
+
+.empty-inbox {
+  text-align: center;
+  color: #95a5a6;
+  padding: 40px 0;
+}
+
+.empty-inbox-icon {
+  font-size: 3em;
+  margin-bottom: 10px;
+}
+
+/* ── Settings ── */
+.settings-card {
+  background-color: white;
+  border-radius: 10px;
+  padding: 25px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  max-width: 600px;
+}
+
+.settings-card h3 {
+  margin: 0 0 20px 0;
+  color: #34495e;
+}
+
+.settings-card > p {
+  color: #7f8c8d;
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background-color: #f8f9fa;
+  transition: 0.3s;
+}
+
+.account-row.connected {
+  background-color: #f0fff4;
+}
+
+.account-info {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.account-icon {
+  font-size: 2em;
+}
+
+.account-name {
+  display: block;
+  color: #2c3e50;
+}
+
+.account-status-connected {
+  font-size: 0.85em;
+  color: #27ae60;
+  font-weight: bold;
+}
+
+.account-status-disconnected {
+  font-size: 0.85em;
+  color: #95a5a6;
+}
+
+.btn-connect {
+  padding: 10px 20px;
+  background-color: #db4437;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  box-shadow: 0 2px 4px rgba(219, 68, 55, 0.3);
+}
+
+.btn-connected {
+  padding: 10px 20px;
+  background-color: #e2e8f0;
+  color: #7f8c8d;
+  border: none;
+  border-radius: 6px;
+  font-weight: bold;
+  cursor: default;
+}
+
+.connection-success {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: #e8f8f5;
+  color: #27ae60;
+  border-radius: 6px;
+  font-size: 0.9em;
+  border-left: 4px solid #27ae60;
+}

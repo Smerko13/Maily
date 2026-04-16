@@ -102,68 +102,69 @@ function App() {
   return (
     <Authenticator loginMechanisms={['email']}>
       {({ signOut, user }) => (
-        <div style={{ display: 'flex', height: '100vh', width: '100vw', backgroundColor: '#f8f9fa', fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif' }}>
-          
-          <div style={{ width: '250px', backgroundColor: '#2c3e50', color: '#ecf0f1', display: 'flex', flexDirection: 'column', boxShadow: '2px 0 5px rgba(0,0,0,0.1)', zIndex: 10 }}>
-            <div style={{ padding: '20px', borderBottom: '1px solid #34495e' }}>
-              <h2 style={{ margin: 0, color: '#3498db', display: 'flex', alignItems: 'center', gap: '10px' }}>📧 Maily</h2>
-              <p style={{ fontSize: '0.8em', color: '#95a5a6', marginTop: '5px' }}>Smart Email Assistant</p>
+        <div className="app-layout">
+
+          {/* Sidebar */}
+          <div className="sidebar">
+            <div className="sidebar-header">
+              <h2 className="sidebar-logo">📧 Maily</h2>
+              <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
-            
-            <div style={{ flex: 1, padding: '20px 0' }}>
-              <div onClick={() => setActiveTab('inbox')} style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'inbox' ? '#34495e' : 'transparent', borderLeft: activeTab === 'inbox' ? '4px solid #3498db' : 'none', opacity: activeTab === 'inbox' ? 1 : 0.7 }}>
+
+            <div className="sidebar-nav">
+              <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
                 📥 Inbox
               </div>
-              <div style={{ padding: '15px 20px', cursor: 'default', opacity: 0.7 }}>✨ Smart Drafting</div>
-              <div style={{ padding: '15px 20px', cursor: 'default', opacity: 0.7 }}>📊 Statistics</div>
-              <div onClick={() => setActiveTab('settings')} style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: activeTab === 'settings' ? '#34495e' : 'transparent', borderLeft: activeTab === 'settings' ? '4px solid #3498db' : 'none', opacity: activeTab === 'settings' ? 1 : 0.7 }}>
+              <div className="nav-item-disabled">✨ Smart Drafting</div>
+              <div className="nav-item-disabled">📊 Statistics</div>
+              <div onClick={() => setActiveTab('settings')} className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
                 ⚙️ Settings
               </div>
             </div>
 
-            <div style={{ padding: '20px', borderTop: '1px solid #34495e', backgroundColor: '#243342' }}>
-              <p style={{ margin: '0 0 10px 0', fontSize: '0.85em', wordBreak: 'break-all' }}>Logged in as:<br/><strong>{user?.signInDetails?.loginId || user?.username}</strong></p>
-              <button onClick={signOut} style={{ width: '100%', padding: '8px', backgroundColor: 'transparent', color: '#e74c3c', border: '1px solid #e74c3c', borderRadius: '4px', cursor: 'pointer', transition: '0.3s' }}>
-                Log Out
-              </button>
+            <div className="sidebar-footer">
+              <p className="sidebar-user">Logged in as:<br/><strong>{user?.signInDetails?.loginId || user?.username}</strong></p>
+              <button onClick={signOut} className="btn-logout">Log Out</button>
             </div>
           </div>
 
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {/* Inbox Tab Content */}
+          {/* Main content */}
+          <div className="main-content">
+
+            {/* Inbox Tab */}
             {activeTab === 'inbox' && (
               <>
-                <header style={{ backgroundColor: 'white', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-                  <h1 style={{ margin: 0, fontSize: '1.5em', color: '#2c3e50' }}>Overview</h1>
-                  <button onClick={fetchFromBackend} disabled={loading} style={{ padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '6px', cursor: loading ? 'not-allowed' : 'pointer', fontWeight: 'bold' }}>
+                <header className="tab-header">
+                  <h1>Overview</h1>
+                  <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
                     {loading ? 'Loading data...' : '🔄 Sync with Server'}
                   </button>
                 </header>
 
-                <div style={{ padding: '40px', flex: 1, overflowY: 'auto' }}>
-                  <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '25px', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f1f2f6', paddingBottom: '10px', marginBottom: '20px' }}>
-                      <h3 style={{ margin: 0, color: '#34495e' }}>📬 Latest Email Analysis</h3>
-                      {message && !message.includes('code') && <span style={{ fontSize: '0.85em', color: '#27ae60', backgroundColor: '#e8f8f5', padding: '4px 10px', borderRadius: '12px' }}>{message}</span>}
+                <div className="tab-body">
+                  <div className="email-card">
+                    <div className="email-card-header">
+                      <h3>📬 Latest Email Analysis</h3>
+                      {message && !message.includes('code') && <span className="status-badge">{message}</span>}
                     </div>
-                    
+
                     {emails.length > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                      <div className="email-list">
                         {emails.map((email, index) => (
-                          <div key={index} style={{ padding: '20px', border: '1px solid #e2e8f0', borderRadius: '8px', backgroundColor: '#fdfdfd' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                              <strong style={{ fontSize: '1.1em', color: '#2c3e50' }}>{email.subject}</strong>
-                              <span style={{ fontSize: '0.8em', color: '#8e44ad', backgroundColor: '#f4ecf8', padding: '4px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                          <div key={index} className="email-item">
+                            <div className="email-item-header">
+                              <strong className="email-subject">{email.subject}</strong>
+                              <span className="email-status">
                                 STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}
                               </span>
                             </div>
-                            <p style={{ margin: 0, color: '#7f8c8d', lineHeight: '1.5' }}>{email.content}</p>
+                            <p className="email-content">{email.content}</p>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <div style={{ textAlign: 'center', color: '#95a5a6', padding: '40px 0' }}>
-                        <div style={{ fontSize: '3em', marginBottom: '10px' }}>📭</div>
+                      <div className="empty-inbox">
+                        <div className="empty-inbox-icon">📭</div>
                         <p>No emails found in the database.<br/>Click Sync to fetch them!</p>
                       </div>
                     )}
@@ -171,53 +172,46 @@ function App() {
                 </div>
               </>
             )}
-            {/* Settings Tab Content */}
+
+            {/* Settings Tab */}
             {activeTab === 'settings' && (
               <>
-                <header style={{ backgroundColor: 'white', padding: '20px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-                  <h1 style={{ margin: 0, fontSize: '1.5em', color: '#2c3e50' }}>Settings</h1>
+                <header className="tab-header">
+                  <h1>Settings</h1>
                 </header>
 
-                <div style={{ padding: '40px', flex: 1, overflowY: 'auto' }}>
-                  <div style={{ backgroundColor: 'white', borderRadius: '10px', padding: '25px', boxShadow: '0 4px 6px rgba(0,0,0,0.05)', maxWidth: '600px' }}>
-                    <h3 style={{ margin: '0 0 20px 0', color: '#34495e' }}>🔗 Connected Accounts</h3>
-                    <p style={{ color: '#7f8c8d', marginBottom: '20px', lineHeight: '1.5' }}>
+                <div className="tab-body">
+                  <div className="settings-card">
+                    <h3>🔗 Connected Accounts</h3>
+                    <p>
                       Connect your email accounts to Maily to allow our smart AI to analyze, summarize, and assist you with your inbox.
                     </p>
-                    
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px', border: '1px solid #e2e8f0', borderRadius: '8px', backgroundColor: isGoogleConnected ? '#f0fff4' : '#f8f9fa', transition: '0.3s' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-                        <span style={{ fontSize: '2em' }}>✉️</span>
+
+                    <div className={`account-row ${isGoogleConnected ? 'connected' : ''}`}>
+                      <div className="account-info">
+                        <span className="account-icon">✉️</span>
                         <div>
-                          <strong style={{ display: 'block', color: '#2c3e50' }}>Google Workspace / Gmail</strong>
-                          {/* status messages that show the connection status */}
+                          <strong className="account-name">Google Workspace / Gmail</strong>
                           {isGoogleConnected ? (
-                            <span style={{ fontSize: '0.85em', color: '#27ae60', fontWeight: 'bold' }}>✅ Connected successfully</span>
+                            <span className="account-status-connected">✅ Connected successfully</span>
                           ) : (
-                            <span style={{ fontSize: '0.85em', color: '#95a5a6' }}>Not connected</span>
+                            <span className="account-status-disconnected">Not connected</span>
                           )}
                         </div>
                       </div>
-                      
-                      {/* change the button text and color based on the connection status */}
+
                       {isGoogleConnected ? (
-                         <button disabled style={{ padding: '10px 20px', backgroundColor: '#e2e8f0', color: '#7f8c8d', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'default' }}>
-                           Connected
-                         </button>
+                        <button disabled className="btn-connected">Connected</button>
                       ) : (
-                        <button onClick={() => loginWithGoogle()} style={{ padding: '10px 20px', backgroundColor: '#db4437', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(219,68,55,0.3)' }}>
-                          Connect
-                        </button>
+                        <button onClick={() => loginWithGoogle()} className="btn-connect">Connect</button>
                       )}
                     </div>
 
-                    {/* status messages that show the connection status and auth code */}
                     {isGoogleConnected && (
-                      <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#e8f8f5', color: '#27ae60', borderRadius: '6px', fontSize: '0.9em', borderLeft: '4px solid #27ae60' }}>
+                      <div className="connection-success">
                         <strong>{message}</strong>
                       </div>
                     )}
-
                   </div>
                 </div>
               </>
