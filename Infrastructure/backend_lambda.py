@@ -9,8 +9,8 @@ table = dynamodb.Table('Maily-Emails')
 def lambda_handler(event, context):
     print("Received event:", json.dumps(event))
 
-    http_method = event.get('httpMethod', '')
-    path = event.get('path', '')
+    http_method = event.get('requestContext', {}).get('http', {}).get('method', '')
+    path = event.get('rawPath', '')
 
     if http_method == 'GET' and path == '/hello':
         return handle_get_emails()
