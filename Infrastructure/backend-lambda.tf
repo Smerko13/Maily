@@ -69,7 +69,7 @@ resource "aws_lambda_function" "maily_backend_lambda" {
     role = aws_iam_role.maily_backend_lambda_role.arn
 
     handler = "backend_lambda.lambda_handler"
-    runtime = "python3.9"
+    runtime = "python3.12"
     timeout = 30
 
     source_code_hash = data.archive_file.backend_lambda_zip.output_base64sha256
@@ -78,7 +78,6 @@ resource "aws_lambda_function" "maily_backend_lambda" {
       variables = {
         GOOGLE_CLIENT_ID     = var.google_client_id
         GOOGLE_CLIENT_SECRET = var.google_client_secret
-        GOOGLE_REDIRECT_URI  = "postmessage"
-        }
+      }
     }
 }

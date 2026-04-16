@@ -3,6 +3,7 @@ import urllib.request
 import urllib.parse
 import os
 import boto3
+import time
 
 # Initialize the DynamoDB resource
 dynamodb = boto3.resource('dynamodb')
@@ -14,17 +15,17 @@ def lambda_handler(event, context):
         authorizer = event.get('requestContext', {}).get('authorizer', {})
         
         # Try different common API Gateway payload structures for the User ID
-        user_id = authorizer.get('jwt', {}).get('claims', {}).get('sub')
-        if not user_id:
-            user_id = authorizer.get('claims', {}).get('sub') # Fallback for some API Gateway configs
-            
+        # Handle both payload format v2.0 (jwt.claims) and v1.0 (claims directly)
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+        else:
+            user_id = None
         if not user_id:
             return {
                 "statusCode": 401,
-                "body": json.dumps({
-                    "error": "Unauthorized. Could not identify user.",
-                    "debug_authorizer_payload": authorizer # This will show us exactly where AWS hid the ID!
-                })
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
         # get the auth code from the request body
@@ -68,7 +69,7 @@ def lambda_handler(event, context):
                 'userId': user_id,
                 'google_access_token': google_data.get('access_token'),
                 'google_refresh_token': google_data.get('refresh_token'),
-                'token_expires_in': google_data.get('expires_in')
+                'token_expires_at': int(time.time()) + google_data.get('expires_in', 3600)
             }
         )
 
@@ -79,7 +80,7 @@ def lambda_handler(event, context):
                 "Access-Control-Allow-Origin": "*"
             },
             "body": json.dumps({
-                "message": "Successfully authenticated with Google and saved tokens! <- V2!!",
+                "message": "Successfully authenticated with Google and saved tokens!",
                 "google_status": "connected"
             })
         }
@@ -87,18 +88,11 @@ def lambda_handler(event, context):
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
         print(f"Google API Error: {error_body}")
-        
-        # WE ARE ADDING DEBUG INFO HERE TO SEE EXACTLY WHAT AWS IS USING
         return {
             "statusCode": e.code,
             "body": json.dumps({
-                "error": "Google authentication failed", 
-                "details": error_body,
-                "debug_info": {
-                    "client_id_used": client_id,
-                    "secret_length": len(client_secret),
-                    "redirect_uri_used": redirect_uri
-                }
+                "error": "Google authentication failed",
+                "details": error_body
             })
         }
     except Exception as e:

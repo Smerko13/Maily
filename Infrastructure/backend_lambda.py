@@ -1,4 +1,6 @@
 import json
+import os
+import urllib.parse
 import boto3
 import urllib.request
 import urllib.error
@@ -6,11 +8,42 @@ import urllib.error
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Maily-Emails')
 
+def refresh_google_access_token(user_id, refresh_token):
+    # Exchange the refresh token for a new access token with Google
+    client_id = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
+    client_secret = os.environ.get('GOOGLE_CLIENT_SECRET', '').strip()
+
+    data = urllib.parse.urlencode({
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'refresh_token': refresh_token,
+        'grant_type': 'refresh_token'
+    }).encode('utf-8')
+
+    req = urllib.request.Request('https://oauth2.googleapis.com/token', data=data, method='POST')
+    req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+
+    with urllib.request.urlopen(req) as resp:
+        token_data = json.loads(resp.read().decode('utf-8'))
+
+    new_access_token = token_data['access_token']
+
+    # Save the new access token back to DynamoDB
+    users_table = dynamodb.Table('Maily-Users')
+    users_table.update_item(
+        Key={'userId': user_id},
+        UpdateExpression='SET google_access_token = :t',
+        ExpressionAttributeValues={':t': new_access_token}
+    )
+
+    return new_access_token
+
 def lambda_handler(event, context):
     print("Received event:", json.dumps(event))
 
-    http_method = event.get('requestContext', {}).get('http', {}).get('method', '')
-    path = event.get('rawPath', '')
+    # Handle both payload format v1.0 and v2.0
+    http_method = event.get('httpMethod') or event.get('requestContext', {}).get('http', {}).get('method', '')
+    path = event.get('path') or event.get('rawPath', '')
 
     if http_method == 'GET' and path == '/hello':
         return handle_get_emails(event)
@@ -33,7 +66,10 @@ def handle_get_emails(event):
             user_id = authorizer['claims'].get('sub')
 
         if not user_id:
-            return {"statusCode": 400, "body": json.dumps({"message": "Could not find user ID"})}
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
+            }
 
         # Query only this user's emails
         response = table.query(
@@ -79,15 +115,33 @@ def handle_sync_emails(event):
             }
         
         access_token = user_record['google_access_token']
+        refresh_token = user_record.get('google_refresh_token')
 
-        # Fetch the list of recent email IDs from Gmail
-        list_req = urllib.request.Request(
-            'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10'
-        )
-        list_req.add_header('Authorization', f'Bearer {access_token}')
+        # Fetch the list of recent email IDs from Gmail, refreshing the token once if it has expired
+        def gmail_get(url, token):
+            req = urllib.request.Request(url)
+            req.add_header('Authorization', f'Bearer {token}')
+            return req
 
-        with urllib.request.urlopen(list_req) as resp:
-            messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
+        try:
+            list_req = gmail_get(
+                'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+                access_token
+            )
+            with urllib.request.urlopen(list_req) as resp:
+                messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and refresh_token:
+                print("Access token expired, refreshing...")
+                access_token = refresh_google_access_token(user_id, refresh_token)
+                list_req = gmail_get(
+                    'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+                    access_token
+                )
+                with urllib.request.urlopen(list_req) as resp:
+                    messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
+            else:
+                raise
 
         if not messages:
             return {
@@ -102,12 +156,11 @@ def handle_sync_emails(event):
         for msg in messages:
             email_id = msg['id']
 
-            detail_req = urllib.request.Request(
+            detail_req = gmail_get(
                 f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{email_id}'
-                f'?format=metadata&metadataHeaders=Subject&metadataHeaders=From'
+                f'?format=metadata&metadataHeaders=Subject&metadataHeaders=From',
+                access_token
             )
-            detail_req.add_header('Authorization', f'Bearer {access_token}')
-
             with urllib.request.urlopen(detail_req) as resp:
                 email_data = json.loads(resp.read().decode('utf-8'))
 
@@ -142,10 +195,13 @@ def handle_sync_emails(event):
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
-        print(f"Gmail API Error: {error_body}")
+        print(f"Google API Error: {error_body}")
         return {
             "statusCode": e.code,
-            "body": json.dumps({"message": "Failed to fetch emails from Gmail", "error": error_body})
+            "body": json.dumps({
+                "error": "Google authentication failed",
+                "details": error_body
+            })
         }
     except Exception as e:
         print(f"Error in sync process: {str(e)}")

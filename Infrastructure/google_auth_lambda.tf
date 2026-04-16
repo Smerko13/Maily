@@ -14,7 +14,7 @@ resource "aws_lambda_function" "google_auth_lambda" {
   role             = aws_iam_role.maily_backend_lambda_role.arn
   
   handler          = "google_auth.lambda_handler"
-  runtime          = "python3.10"
+  runtime          = "python3.12"
   source_code_hash = data.archive_file.google_auth_zip.output_base64sha256
 
   environment {
