@@ -38,6 +38,29 @@ def refresh_google_access_token(user_id, refresh_token):
 
     return new_access_token
 
+def summarize_email(subject, snippet):
+    api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+    prompt = f"Summarize this email in 1-2 sentences.\n\nSubject: {subject}\n\nContent: {snippet}"
+
+    body = json.dumps({
+        "model": "gpt-4.1-nano",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 100
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        'https://api.openai.com/v1/chat/completions',
+        data=body,
+        method='POST'
+    )
+    req.add_header('Authorization', f'Bearer {api_key}')
+    req.add_header('Content-Type', 'application/json')
+
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    return result['choices'][0]['message']['content'].strip()
+
 def lambda_handler(event, context):
     print("Received event:", json.dumps(event))
 
@@ -170,12 +193,15 @@ def handle_sync_emails(event):
             snippet = email_data.get('snippet', '')
             is_unread = 'UNREAD' in email_data.get('labelIds', [])
 
+            summary = summarize_email(subject, snippet)
+
             table.put_item(Item={
                 'userId':  user_id,
                 'emailId': email_id,
                 'subject': subject,
                 'from':    sender,
                 'content': snippet,
+                'summary': summary,
                 'status':  'unread' if is_unread else 'read'
             })
             saved_emails.append({
@@ -183,6 +209,7 @@ def handle_sync_emails(event):
                 'subject': subject,
                 'from':    sender,
                 'content': snippet,
+                'summary': summary,
                 'status':  'unread' if is_unread else 'read'
             })
             saved_count += 1

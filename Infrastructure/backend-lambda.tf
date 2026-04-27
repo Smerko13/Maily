@@ -70,7 +70,7 @@ resource "aws_lambda_function" "maily_backend_lambda" {
 
     handler = "backend_lambda.lambda_handler"
     runtime = "python3.12"
-    timeout = 30
+    timeout = 120
 
     source_code_hash = data.archive_file.backend_lambda_zip.output_base64sha256
 
@@ -78,6 +78,7 @@ resource "aws_lambda_function" "maily_backend_lambda" {
       variables = {
         GOOGLE_CLIENT_ID     = var.google_client_id
         GOOGLE_CLIENT_SECRET = var.google_client_secret
+        OPENAI_API_KEY      = var.openai_api_key
       }
     }
 }

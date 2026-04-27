@@ -11,3 +11,10 @@ variable "google_client_secret" {
   sensitive = true
   nullable = false
 }
+
+variable "openai_api_key" {
+  description = "OpenAI API Key for the OpenAI integration in the Lambda function"
+  type        = string
+  sensitive = true
+  nullable = false
+}

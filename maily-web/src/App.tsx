@@ -7,6 +7,7 @@ import './App.css';
 interface Email {
   subject: string;
   content: string;
+  summary?: string;
   status?: string;
 }
 
@@ -158,6 +159,9 @@ function App() {
                                 STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}
                               </span>
                             </div>
+                            {email.summary && (
+                              <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>
+                            )}
                             <p className="email-content">{email.content}</p>
                           </div>
                         ))}
