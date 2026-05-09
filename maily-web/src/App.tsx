@@ -11,11 +11,20 @@ interface Email {
   status?: string;
 }
 
+interface Stats {
+  total: number;
+  unread: number;
+  read: number;
+  top_senders: { sender: string; count: number }[];
+}
+
 function App() {
   const [message, setMessage] = useState<string>(''); // a string shown to the user (e.g. "✅ Connected!")
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'inbox' | 'settings'>('inbox'); // which tab is visible; TypeScript restricts it to only 'inbox' or 'settings'
+  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats'>('inbox'); // which tab is visible
+  const [stats, setStats] = useState<Stats | null>(null); // statistics data from the backend
+  const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
   return localStorage.getItem('isGoogleConnected') === 'true'; // initialized from localStorage so it survives a page refresh
 }); 
@@ -70,6 +79,32 @@ function App() {
     },
   });
 
+  // Fetch statistics function
+  const fetchStats = async () => {
+    setStatsLoading(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/stats`;
+      const response = await fetch(apiUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      setStats(data);
+    } catch (error) {
+      console.error('Error fetching stats:', error);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
   // Sync emails function
   const fetchFromBackend = async () => {
     setLoading(true);
@@ -117,7 +152,7 @@ function App() {
                 📥 Inbox
               </div>
               <div className="nav-item-disabled">✨ Smart Drafting</div>
-              <div className="nav-item-disabled">📊 Statistics</div>
+              <div onClick={() => { setActiveTab('stats'); fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>📊 Statistics</div>
               <div onClick={() => setActiveTab('settings')} className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
                 ⚙️ Settings
               </div>
@@ -173,6 +208,70 @@ function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              </>
+            )}
+
+            {/* Statistics Tab */}
+            {activeTab === 'stats' && (
+              <>
+                <header className="tab-header">
+                  <h1>Statistics</h1>
+                  <button onClick={fetchStats} disabled={statsLoading} className="btn-sync">
+                    {statsLoading ? 'Loading...' : '🔄 Refresh'}
+                  </button>
+                </header>
+
+                <div className="tab-body">
+                  {statsLoading && <p style={{ padding: '1rem' }}>Loading statistics...</p>}
+
+                  {!statsLoading && stats && (
+                    <>
+                      {/* Summary cards */}
+                      <div className="stats-cards">
+                        <div className="stat-card">
+                          <div className="stat-number">{stats.total}</div>
+                          <div className="stat-label">Total Emails</div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{stats.unread}</div>
+                          <div className="stat-label">Unread</div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{stats.read}</div>
+                          <div className="stat-label">Read</div>
+                        </div>
+                      </div>
+
+                      {/* Top senders */}
+                      <div className="email-card" style={{ marginTop: '1.5rem' }}>
+                        <div className="email-card-header">
+                          <h3>📬 Top Senders</h3>
+                        </div>
+                        {stats.top_senders.length > 0 ? (
+                          <div className="email-list">
+                            {stats.top_senders.map((entry, index) => (
+                              <div key={index} className="email-item">
+                                <div className="email-item-header">
+                                  <strong className="email-subject">{entry.sender}</strong>
+                                  <span className="email-status">{entry.count} email{entry.count !== 1 ? 's' : ''}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p style={{ padding: '1rem', color: '#888' }}>No sender data available.</p>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {!statsLoading && !stats && (
+                    <div className="empty-inbox">
+                      <div className="empty-inbox-icon">📊</div>
+                      <p>No statistics yet.<br/>Sync your emails first, then come back here!</p>
+                    </div>
+                  )}
                 </div>
               </>
             )}

@@ -72,6 +72,8 @@ def lambda_handler(event, context):
         return handle_get_emails(event)
     elif http_method == 'POST' and path == '/sync':
         return handle_sync_emails(event)
+    elif http_method == 'GET' and path == '/stats':
+        return handle_get_stats(event)
     else:
         return {
             "statusCode": 404,
@@ -235,4 +237,65 @@ def handle_sync_emails(event):
         return {
             "statusCode": 500,
             "body": json.dumps({"message": "Internal server error during sync", "error": str(e)})
+        }
+
+def handle_get_stats(event):
+    try:
+        # Extract the user ID from the Cognito JWT claims
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
+            }
+
+        # Fetch all of this user's emails from DynamoDB
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+        )
+        emails = response.get('Items', [])
+
+        if not emails:
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"total": 0, "unread": 0, "read": 0, "top_senders": []})
+            }
+
+        # Count read vs unread
+        total = len(emails)
+        unread = sum(1 for e in emails if e.get('status') == 'unread')
+        read = total - unread
+
+        # Count emails per sender and return the top 5
+        sender_counts = {}
+        for e in emails:
+            sender = e.get('from', 'Unknown')
+            sender_counts[sender] = sender_counts.get(sender, 0) + 1
+
+        top_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_senders = [{"sender": s, "count": c} for s, c in top_senders]
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "total": total,
+                "unread": unread,
+                "read": read,
+                "top_senders": top_senders
+            })
+        }
+
+    except Exception as e:
+        print(f"Error in stats: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Internal server error during stats", "error": str(e)})
         }
