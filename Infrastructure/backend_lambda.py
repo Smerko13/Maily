@@ -74,6 +74,8 @@ def lambda_handler(event, context):
         return handle_sync_emails(event)
     elif http_method == 'GET' and path == '/stats':
         return handle_get_stats(event)
+    elif http_method == 'POST' and path == '/draft':
+        return handle_draft_email(event)
     else:
         return {
             "statusCode": 404,
@@ -298,4 +300,74 @@ def handle_get_stats(event):
         return {
             "statusCode": 500,
             "body": json.dumps({"message": "Internal server error during stats", "error": str(e)})
+        }
+
+def handle_draft_email(event):
+    try:
+        # Extract the user ID from the Cognito JWT claims
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
+            }
+
+        # Get the email details sent from the frontend
+        body = json.loads(event.get('body', '{}'))
+        subject = body.get('subject', '(No Subject)')
+        summary = body.get('summary', '')
+        content = body.get('content', '')
+
+        if not summary and not content:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "No email content provided to draft a reply for."})
+            }
+
+        # Call OpenAI to generate a reply draft
+        api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        prompt = (
+            f"You are a helpful email assistant. Write a professional and polite reply to the following email.\n\n"
+            f"Subject: {subject}\n"
+            f"Summary: {summary}\n"
+            f"Original snippet: {content}\n\n"
+            f"Write only the body of the reply, without a subject line or greeting header."
+        )
+
+        request_body = json.dumps({
+            "model": "gpt-4.1-nano",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 300
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            'https://api.openai.com/v1/chat/completions',
+            data=request_body,
+            method='POST'
+        )
+        req.add_header('Authorization', f'Bearer {api_key}')
+        req.add_header('Content-Type', 'application/json')
+
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+
+        draft = result['choices'][0]['message']['content'].strip()
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"draft": draft})
+        }
+
+    except Exception as e:
+        print(f"Error generating draft: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Internal server error during draft generation", "error": str(e)})
         }
