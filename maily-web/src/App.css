@@ -75,6 +75,15 @@
   background-clip: text;
 }
 
+.sidebar-logo-img {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  image-rendering: -webkit-optimize-contrast;
+}
+
 .sidebar-subtitle {
   font-size: 0.7em;
   color: #475569;
@@ -791,4 +800,178 @@
 .theme-swatch[data-swatch="rose"]    .theme-swatch-circle { background: linear-gradient(135deg, #4c0519 50%, #f43f5e 50%); }
 .theme-swatch[data-swatch="emerald"] .theme-swatch-circle { background: linear-gradient(135deg, #064e3b 50%, #10b981 50%); }
 .theme-swatch[data-swatch="midnight"] .theme-swatch-circle { background: linear-gradient(135deg, #060912 50%, #818cf8 50%); }
+
+/* ── Skeleton / shimmer ── */
+@keyframes shimmer {
+  0%   { background-position: -600px 0; }
+  100% { background-position:  600px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--border) 25%,
+    color-mix(in srgb, var(--border) 50%, var(--surface)) 50%,
+    var(--border) 75%
+  );
+  background-size: 600px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 6px;
+}
+
+.skeleton-email-item {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skeleton-row {
+  height: 13px;
+  border-radius: 6px;
+}
+
+.skeleton-row.short  { width: 35%; }
+.skeleton-row.medium { width: 60%; }
+.skeleton-row.long   { width: 90%; }
+.skeleton-row.full   { width: 100%; }
+
+.skeleton-badge {
+  height: 22px;
+  width: 80px;
+  border-radius: 20px;
+}
+
+.skeleton-stat-card {
+  flex: 1;
+  min-width: 140px;
+  background-color: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 28px 20px;
+  text-align: center;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.skeleton-number {
+  height: 42px;
+  width: 60px;
+  border-radius: 8px;
+}
+
+.skeleton-label {
+  height: 13px;
+  width: 70px;
+}
+
+.skeleton-draft {
+  background-color: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 22px 24px;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--accent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Toast notifications ── */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  min-width: 280px;
+  max-width: 400px;
+  pointer-events: all;
+  animation: toast-in 0.22s ease forwards;
+  font-size: 0.875em;
+  font-weight: 500;
+  font-family: inherit;
+  border-left: 4px solid transparent;
+}
+
+.toast-success {
+  background-color: #f0fdf4;
+  color: #15803d;
+  border-left-color: #22c55e;
+}
+
+.toast-error {
+  background-color: #fef2f2;
+  color: #dc2626;
+  border-left-color: #ef4444;
+}
+
+.toast-info {
+  background-color: #eef2ff;
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+.toast-text {
+  flex: 1;
+  line-height: 1.45;
+}
+
+.toast-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2em;
+  line-height: 1;
+  opacity: 0.45;
+  padding: 0 2px;
+  color: inherit;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+  font-family: inherit;
+}
+
+.toast-close:hover {
+  opacity: 1;
+}
+
+/* Dark theme toast overrides */
+[data-theme="midnight"] .toast-success {
+  background-color: #0a1f10;
+  color: #4ade80;
+}
+
+[data-theme="midnight"] .toast-error {
+  background-color: #1f0a0a;
+  color: #f87171;
+}
+
+[data-theme="midnight"] .toast-info {
+  background-color: #141929;
+  color: var(--accent-light);
+  border-left-color: var(--accent-light);
+}
 

@@ -18,6 +18,8 @@ interface Stats {
   top_senders: { sender: string; count: number }[];
 }
 
+interface Toast { id: number; text: string; type: 'success' | 'error' | 'info'; }
+
 type ThemeId = 'indigo' | 'ocean' | 'rose' | 'emerald' | 'midnight';
 
 const THEMES: { id: ThemeId; label: string }[] = [
@@ -29,14 +31,17 @@ const THEMES: { id: ThemeId; label: string }[] = [
 ];
 
 function App() {
-  const [message, setMessage] = useState<string>(''); // Google auth status (used in Settings tab)
-  const [syncMessage, setSyncMessage] = useState<string>(''); // inbox sync status
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
   const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats' | 'drafting'>('inbox'); // which tab is visible
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
-  const [statsError, setStatsError] = useState<string>('');
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const showToast = (text: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, text, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  };
   const [selectedEmailIndex, setSelectedEmailIndex] = useState<number | null>(null); // index of the email selected for drafting
   const [draft, setDraft] = useState<string>(''); // the AI-generated reply draft
   const [draftLoading, setDraftLoading] = useState<boolean>(false);
@@ -79,7 +84,7 @@ function App() {
     scope: 'https://www.googleapis.com/auth/gmail.readonly',
     onSuccess: async (codeResponse) => {
       console.log("Success! Auth Code from Google:", codeResponse.code);
-      setMessage("⏳ Auth code received! Connecting to Google...");
+      showToast('Connecting to Google...', 'info');
 
       try {
         const session = await fetchAuthSession();
@@ -108,25 +113,24 @@ function App() {
         const data = await response.json();
         console.log("Backend response:", data);
         
-        setMessage("✅ Access token received from backend! Google account connected successfully.");
+        showToast('Google account connected successfully!', 'success');
         
       } catch (error) {
         console.error('Error sending code to backend:', error);
-        setMessage('❌ Error connecting to Google. Please try again.');
+        showToast('Error connecting to Google. Please try again.', 'error');
         setIsGoogleConnected(false); 
         localStorage.removeItem('isGoogleConnected');
       }
     },
     onError: (errorResponse) => {
       console.error("Google Login Failed:", errorResponse);
-      setMessage("❌ Error connecting to Google. Please try again.");
+      showToast('Error connecting to Google. Please try again.', 'error');
     },
   });
 
   // Fetch statistics function
   const fetchStats = async () => {
     setStatsLoading(true);
-    setStatsError('');
     try {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
@@ -145,7 +149,7 @@ function App() {
       setStats(data);
     } catch (error) {
       console.error('Error fetching stats:', error);
-      setStatsError('❌ Failed to load statistics. Please try again.');
+      showToast('Failed to load statistics. Please try again.', 'error');
     } finally {
       setStatsLoading(false);
     }
@@ -229,11 +233,11 @@ function App() {
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
 
-      setSyncMessage(data.message);
+      showToast(data.message, 'success');
       if (data.emails) setEmails(data.emails);
     } catch (error) {
       console.error('Error fetching data from backend:', error);
-      setSyncMessage('❌ Error pulling data from backend');
+      showToast('Error pulling data from backend', 'error');
     } finally {
       setLoading(false);
     }
@@ -241,14 +245,24 @@ function App() {
 
   //The UI / JSX
   return (
-    <Authenticator loginMechanisms={['email']}>
+    <Authenticator loginMechanisms={['email']} components={{
+        Header() {
+          return (
+            <div style={{ textAlign: 'center', paddingTop: '32px', paddingBottom: '8px' }}>
+              <img src="/maily-logo.png" alt="Maily" style={{ width: '72px', height: '72px', borderRadius: '18px', objectFit: 'cover', boxShadow: '0 4px 16px rgba(0,0,0,0.12)' }} />
+              <p style={{ margin: '10px 0 0', fontWeight: 700, fontSize: '1.2em', color: '#0f172a', fontFamily: 'Inter, sans-serif' }}>Maily</p>
+              <p style={{ margin: '4px 0 0', fontSize: '0.78em', color: '#64748b', fontFamily: 'Inter, sans-serif', textTransform: 'uppercase', letterSpacing: '0.8px' }}>Smart Email Assistant</p>
+            </div>
+          );
+        }
+      }}>
       {({ signOut, user }) => (
         <div className="app-layout" data-theme={theme}>
 
           {/* Sidebar */}
           <div className="sidebar">
             <div className="sidebar-header">
-              <h2 className="sidebar-logo">📧 <span className="logo-text">Maily</span></h2>
+              <h2 className="sidebar-logo"><img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span></h2>
               <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
 
@@ -286,10 +300,23 @@ function App() {
                   <div className="email-card">
                     <div className="email-card-header">
                       <h3>📬 Latest Email Analysis</h3>
-                      {syncMessage && <span className="status-badge">{syncMessage}</span>}
                     </div>
 
-                    {emails.length > 0 ? (
+                    {loading ? (
+                      <div className="email-list">
+                        {[1,2,3,4].map(i => (
+                          <div key={i} className="skeleton-email-item">
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                              <div className="skeleton skeleton-row medium" />
+                              <div className="skeleton skeleton-badge" />
+                            </div>
+                            <div className="skeleton skeleton-row long" />
+                            <div className="skeleton skeleton-row full" />
+                            <div className="skeleton skeleton-row medium" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : emails.length > 0 ? (
                       <div className="email-list">
                         {emails.map((email, index) => (
                           <div key={index} className="email-item">
@@ -372,7 +399,17 @@ function App() {
                               {draftLoading ? '⏳ Generating...' : '✨ Generate Draft Reply'}
                             </button>
 
-                            {draft && (
+                            {draftLoading && (
+                              <div className="skeleton-draft">
+                                <div className="skeleton skeleton-row short" style={{ height: '16px' }} />
+                                <div className="skeleton skeleton-row full" />
+                                <div className="skeleton skeleton-row full" />
+                                <div className="skeleton skeleton-row long" />
+                                <div className="skeleton skeleton-row medium" />
+                                <div className="skeleton skeleton-row full" />
+                              </div>
+                            )}
+                            {!draftLoading && draft && (
                               <div className="draft-output">
                                 <div className="draft-output-header">
                                   <h4>📝 Suggested Reply</h4>
@@ -426,13 +463,35 @@ function App() {
                     </div>
                   )}
 
-                  {statsLoading && <p style={{ padding: '1rem' }}>Loading statistics...</p>}
-
-                  {statsError && (
-                    <div className="stats-error">{statsError}</div>
+                  {statsLoading && (
+                    <>
+                      <div className="stats-cards">
+                        {[1,2,3].map(i => (
+                          <div key={i} className="skeleton-stat-card">
+                            <div className="skeleton skeleton-number" />
+                            <div className="skeleton skeleton-label" />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="email-card">
+                        <div className="email-card-header">
+                          <div className="skeleton skeleton-row short" style={{ height: '18px' }} />
+                        </div>
+                        <div className="email-list">
+                          {[1,2,3].map(i => (
+                            <div key={i} className="skeleton-email-item">
+                              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <div className="skeleton skeleton-row medium" />
+                                <div className="skeleton skeleton-badge" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </>
                   )}
 
-                  {!statsLoading && !statsError && stats && (
+                  {!statsLoading && stats && (
                     <>
                       {/* Summary cards */}
                       <div className="stats-cards">
@@ -473,7 +532,7 @@ function App() {
                     </>
                   )}
 
-                  {!statsLoading && !statsError && !stats && (
+                  {!statsLoading && !stats && (
                     <div className="empty-inbox">
                       <div className="empty-inbox-icon">📊</div>
                       <p>No statistics yet.<br/>Sync your emails first, then come back here!</p>
@@ -538,16 +597,21 @@ function App() {
                       )}
                     </div>
 
-                    {isGoogleConnected && (
-                      <div className="connection-success">
-                        <strong>{message}</strong>
-                      </div>
-                    )}
                   </div>
                 </div>
               </>
             )}
 
+          </div>
+
+          {/* Toast notifications */}
+          <div className="toast-container">
+            {toasts.map(toast => (
+              <div key={toast.id} className={`toast toast-${toast.type}`}>
+                <span className="toast-text">{toast.text}</span>
+                <button className="toast-close" onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}>×</button>
+              </div>
+            ))}
           </div>
         </div>
       )}
