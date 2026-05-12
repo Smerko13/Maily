@@ -10,8 +10,8 @@ resource "aws_lambda_function" "google_auth_lambda" {
   filename         = "google_auth.zip"
   function_name    = "Maily-Google-Auth"
   
-  # make sure to update the role ARN to the correct IAM role that has permissions for this Lambda function, this role should have at least basic Lambda execution permissions and any additional permissions needed for the function's logic (like logging to CloudWatch)
-  role             = aws_iam_role.maily_backend_lambda_role.arn
+  # Use the pre-existing LabRole — lab environments restrict iam:CreateRole.
+  role             = data.aws_iam_role.lab_role.arn
   
   handler          = "google_auth.lambda_handler"
   runtime          = "python3.12"

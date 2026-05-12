@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
@@ -19,15 +19,40 @@ interface Stats {
 }
 
 function App() {
-  const [message, setMessage] = useState<string>(''); // a string shown to the user (e.g. "✅ Connected!")
+  const [message, setMessage] = useState<string>(''); // Google auth status (used in Settings tab)
+  const [syncMessage, setSyncMessage] = useState<string>(''); // inbox sync status
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats'>('inbox'); // which tab is visible
-  const [stats, setStats] = useState<Stats | null>(null); // statistics data from the backend
+  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats' | 'drafting'>('inbox'); // which tab is visible
+  const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
+  const [statsError, setStatsError] = useState<string>('');
+  const [selectedEmailIndex, setSelectedEmailIndex] = useState<number | null>(null); // index of the email selected for drafting
+  const [draft, setDraft] = useState<string>(''); // the AI-generated reply draft
+  const [draftLoading, setDraftLoading] = useState<boolean>(false);
   const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
   return localStorage.getItem('isGoogleConnected') === 'true'; // initialized from localStorage so it survives a page refresh
 }); 
+
+  // Auto-load emails from DynamoDB on page load (for returning users who refresh the page)
+  useEffect(() => {
+    const loadEmails = async () => {
+      try {
+        const session = await fetchAuthSession();
+        const token = session.tokens?.idToken?.toString();
+        if (!token) return; // not logged in yet, silently skip
+        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/hello`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.emails && data.emails.length > 0) setEmails(data.emails);
+      } catch {
+        // silently fail — the user can always click Sync manually
+      }
+    };
+    loadEmails();
+  }, []);
 
   // Google login handler
  const loginWithGoogle = useGoogleLogin({
@@ -82,6 +107,7 @@ function App() {
   // Fetch statistics function
   const fetchStats = async () => {
     setStatsLoading(true);
+    setStatsError('');
     try {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
@@ -100,8 +126,42 @@ function App() {
       setStats(data);
     } catch (error) {
       console.error('Error fetching stats:', error);
+      setStatsError('❌ Failed to load statistics. Please try again.');
     } finally {
       setStatsLoading(false);
+    }
+  };
+
+  // Generate a draft reply for the selected email
+  const fetchDraft = async (email: Email) => {
+    setDraftLoading(true);
+    setDraft('');
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/draft`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          subject: email.subject,
+          summary: email.summary,
+          content: email.content
+        })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      setDraft(data.draft);
+    } catch (error) {
+      console.error('Error generating draft:', error);
+      setDraft('❌ Failed to generate draft. Please try again.');
+    } finally {
+      setDraftLoading(false);
     }
   };
 
@@ -124,11 +184,11 @@ function App() {
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
 
-      setMessage(data.message);
+      setSyncMessage(data.message);
       if (data.emails) setEmails(data.emails);
     } catch (error) {
       console.error('Error fetching data from backend:', error);
-      setMessage('Error pulling data from backend');
+      setSyncMessage('❌ Error pulling data from backend');
     } finally {
       setLoading(false);
     }
@@ -151,8 +211,8 @@ function App() {
               <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
                 📥 Inbox
               </div>
-              <div className="nav-item-disabled">✨ Smart Drafting</div>
-              <div onClick={() => { setActiveTab('stats'); fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>📊 Statistics</div>
+              <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>✨ Smart Drafting</div>
+              <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>📊 Statistics</div>
               <div onClick={() => setActiveTab('settings')} className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
                 ⚙️ Settings
               </div>
@@ -181,7 +241,7 @@ function App() {
                   <div className="email-card">
                     <div className="email-card-header">
                       <h3>📬 Latest Email Analysis</h3>
-                      {message && !message.includes('code') && <span className="status-badge">{message}</span>}
+                      {syncMessage && <span className="status-badge">{syncMessage}</span>}
                     </div>
 
                     {emails.length > 0 ? (
@@ -212,6 +272,84 @@ function App() {
               </>
             )}
 
+            {/* Smart Drafting Tab */}
+            {activeTab === 'drafting' && (
+              <>
+                <header className="tab-header">
+                  <h1>Smart Drafting</h1>
+                </header>
+
+                <div className="tab-body">
+                  {emails.length === 0 ? (
+                    <div className="empty-inbox">
+                      <div className="empty-inbox-icon">✨</div>
+                      <p>No emails loaded yet.<br/>Go to Inbox and click Sync first!</p>
+                    </div>
+                  ) : (
+                    <div className="drafting-layout">
+                      {/* Left panel: email picker */}
+                      <div className="drafting-email-list">
+                        <h3 className="drafting-panel-title">Select an email</h3>
+                        {emails.map((email, index) => (
+                          <div
+                            key={index}
+                            className={`drafting-email-item ${selectedEmailIndex === index ? 'selected' : ''}`}
+                            onClick={() => { setSelectedEmailIndex(index); setDraft(''); }}
+                          >
+                            <strong className="email-subject">{email.subject}</strong>
+                            <span className="drafting-email-snippet">{email.content?.slice(0, 80)}…</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Right panel: draft area */}
+                      <div className="drafting-panel">
+                        {selectedEmailIndex === null ? (
+                          <div className="drafting-placeholder">
+                            <p>👈 Pick an email on the left to generate a reply draft.</p>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="drafting-email-preview">
+                              <h3>{emails[selectedEmailIndex].subject}</h3>
+                              {emails[selectedEmailIndex].summary && (
+                                <p className="drafting-summary"><strong>AI Summary:</strong> {emails[selectedEmailIndex].summary}</p>
+                              )}
+                              <p className="drafting-snippet">{emails[selectedEmailIndex].content}</p>
+                            </div>
+
+                            <button
+                              onClick={() => fetchDraft(emails[selectedEmailIndex!])}
+                              disabled={draftLoading}
+                              className="btn-sync"
+                              style={{ marginBottom: '1rem' }}
+                            >
+                              {draftLoading ? '⏳ Generating...' : '✨ Generate Draft Reply'}
+                            </button>
+
+                            {draft && (
+                              <div className="draft-output">
+                                <div className="draft-output-header">
+                                  <h4>📝 Suggested Reply</h4>
+                                  <button
+                                    className="btn-copy"
+                                    onClick={() => navigator.clipboard.writeText(draft)}
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                                <p className="draft-text">{draft}</p>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
             {/* Statistics Tab */}
             {activeTab === 'stats' && (
               <>
@@ -225,7 +363,11 @@ function App() {
                 <div className="tab-body">
                   {statsLoading && <p style={{ padding: '1rem' }}>Loading statistics...</p>}
 
-                  {!statsLoading && stats && (
+                  {statsError && (
+                    <div className="stats-error">{statsError}</div>
+                  )}
+
+                  {!statsLoading && !statsError && stats && (
                     <>
                       {/* Summary cards */}
                       <div className="stats-cards">
@@ -266,7 +408,7 @@ function App() {
                     </>
                   )}
 
-                  {!statsLoading && !stats && (
+                  {!statsLoading && !statsError && !stats && (
                     <div className="empty-inbox">
                       <div className="empty-inbox-icon">📊</div>
                       <p>No statistics yet.<br/>Sync your emails first, then come back here!</p>

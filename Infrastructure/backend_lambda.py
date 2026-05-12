@@ -98,11 +98,19 @@ def handle_get_emails(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Query only this user's emails
+        # Query all of this user's emails, paginating through DynamoDB results
+        # (a single query only returns up to 1MB; LastEvaluatedKey means there's more)
+        items = []
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
         )
-        items = response.get('Items', [])
+        items.extend(response.get('Items', []))
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            items.extend(response.get('Items', []))
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
@@ -257,11 +265,18 @@ def handle_get_stats(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Fetch all of this user's emails from DynamoDB
+        # Fetch all of this user's emails from DynamoDB, with pagination
+        emails = []
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
         )
-        emails = response.get('Items', [])
+        emails.extend(response.get('Items', []))
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            emails.extend(response.get('Items', []))
 
         if not emails:
             return {
