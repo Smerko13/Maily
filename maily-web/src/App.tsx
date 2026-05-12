@@ -30,6 +30,8 @@ function App() {
   const [selectedEmailIndex, setSelectedEmailIndex] = useState<number | null>(null); // index of the email selected for drafting
   const [draft, setDraft] = useState<string>(''); // the AI-generated reply draft
   const [draftLoading, setDraftLoading] = useState<boolean>(false);
+  const [exportLoading, setExportLoading] = useState<boolean>(false);
+  const [exportUrl, setExportUrl] = useState<string>('');
   const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
   return localStorage.getItem('isGoogleConnected') === 'true'; // initialized from localStorage so it survives a page refresh
 }); 
@@ -162,6 +164,32 @@ function App() {
       setDraft('❌ Failed to generate draft. Please try again.');
     } finally {
       setDraftLoading(false);
+    }
+  };
+
+  // Generate and download an export of all email summaries from S3
+  const fetchExport = async () => {
+    setExportLoading(true);
+    setExportUrl('');
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/export`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      setExportUrl(data.download_url);
+    } catch (error) {
+      console.error('Error exporting emails:', error);
+    } finally {
+      setExportLoading(false);
     }
   };
 
@@ -355,12 +383,32 @@ function App() {
               <>
                 <header className="tab-header">
                   <h1>Statistics</h1>
-                  <button onClick={fetchStats} disabled={statsLoading} className="btn-sync">
-                    {statsLoading ? 'Loading...' : '🔄 Refresh'}
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <button onClick={fetchStats} disabled={statsLoading} className="btn-sync">
+                      {statsLoading ? 'Loading...' : '🔄 Refresh'}
+                    </button>
+                    <button onClick={fetchExport} disabled={exportLoading} className="btn-sync">
+                      {exportLoading ? '⏳ Exporting...' : '⬇️ Export Summaries'}
+                    </button>
+                  </div>
                 </header>
 
                 <div className="tab-body">
+                  {exportUrl && (
+                    <div className="email-card" style={{ marginTop: '1rem' }}>
+                      <div className="email-card-header">
+                        <h3>⬇️ Export Ready</h3>
+                      </div>
+                      <p style={{ padding: '0.75rem 1rem' }}>
+                        Your summaries have been saved to S3.{' '}
+                        <a href={exportUrl} download="email-summaries.json" style={{ color: 'var(--accent)' }}>
+                          Click here to download
+                        </a>
+                        {' '}(link expires in 15 minutes)
+                      </p>
+                    </div>
+                  )}
+
                   {statsLoading && <p style={{ padding: '1rem' }}>Loading statistics...</p>}
 
                   {statsError && (

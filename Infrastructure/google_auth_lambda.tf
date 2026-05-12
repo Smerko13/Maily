@@ -19,8 +19,9 @@ resource "aws_lambda_function" "google_auth_lambda" {
 
   environment {
     variables = {
-      GOOGLE_CLIENT_ID     = var.google_client_id
-      GOOGLE_CLIENT_SECRET = var.google_client_secret
+      # The Lambda only receives the secret name; actual credentials are
+      # fetched at runtime from Secrets Manager via the SDK.
+      SECRET_NAME = aws_secretsmanager_secret.maily_secrets.name
     }
   }
 }

@@ -9,6 +9,19 @@ import time
 dynamodb = boto3.resource('dynamodb')
 users_table = dynamodb.Table('Maily-Users')
 
+# Secrets are fetched once per Lambda container (cold start) and cached in memory.
+# This avoids a Secrets Manager API call on every invocation.
+_secrets_cache = None
+
+def get_secrets():
+    global _secrets_cache
+    if _secrets_cache is None:
+        client = boto3.client('secretsmanager')
+        secret_name = os.environ['SECRET_NAME']
+        response = client.get_secret_value(SecretId=secret_name)
+        _secrets_cache = json.loads(response['SecretString'])
+    return _secrets_cache
+
 def lambda_handler(event, context):
     try:
         # Extract the Cognito User ID from the API Gateway authorizer context
@@ -38,9 +51,10 @@ def lambda_handler(event, context):
                 "body": json.dumps({"error": "No auth code provided in the request"})
             }
 
-        # get client credentials and STRIP any accidental invisible spaces
-        client_id = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
-        client_secret = os.environ.get('GOOGLE_CLIENT_SECRET', '').strip()
+        # get client credentials from Secrets Manager
+        secrets = get_secrets()
+        client_id = secrets['GOOGLE_CLIENT_ID']
+        client_secret = secrets['GOOGLE_CLIENT_SECRET']
         redirect_uri = 'postmessage'
 
         # prepare the data for the token exchange request

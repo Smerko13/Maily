@@ -8,10 +8,24 @@ import urllib.error
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Maily-Emails')
 
+# Secrets are fetched once per Lambda container (cold start) and cached in memory.
+# This avoids a Secrets Manager API call on every invocation.
+_secrets_cache = None
+
+def get_secrets():
+    global _secrets_cache
+    if _secrets_cache is None:
+        client = boto3.client('secretsmanager')
+        secret_name = os.environ['SECRET_NAME']
+        response = client.get_secret_value(SecretId=secret_name)
+        _secrets_cache = json.loads(response['SecretString'])
+    return _secrets_cache
+
 def refresh_google_access_token(user_id, refresh_token):
     # Exchange the refresh token for a new access token with Google
-    client_id = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
-    client_secret = os.environ.get('GOOGLE_CLIENT_SECRET', '').strip()
+    secrets = get_secrets()
+    client_id = secrets['GOOGLE_CLIENT_ID']
+    client_secret = secrets['GOOGLE_CLIENT_SECRET']
 
     data = urllib.parse.urlencode({
         'client_id': client_id,
@@ -39,7 +53,7 @@ def refresh_google_access_token(user_id, refresh_token):
     return new_access_token
 
 def summarize_email(subject, snippet):
-    api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+    api_key = get_secrets()['OPENAI_API_KEY']
     prompt = f"Summarize this email in 1-2 sentences.\n\nSubject: {subject}\n\nContent: {snippet}"
 
     body = json.dumps({
@@ -76,6 +90,8 @@ def lambda_handler(event, context):
         return handle_get_stats(event)
     elif http_method == 'POST' and path == '/draft':
         return handle_draft_email(event)
+    elif http_method == 'POST' and path == '/export':
+        return handle_export(event)
     else:
         return {
             "statusCode": 404,
@@ -114,7 +130,7 @@ def handle_get_emails(event):
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"message": "Data fetched successfully!", "emails": items})
+            "body": json.dumps({"message": "Data fetched successfully!", "emails": items}, ensure_ascii=False)
         }
     except Exception as e:
         print(f"Error reading from DynamoDB: {str(e)}")
@@ -202,7 +218,9 @@ def handle_sync_emails(event):
             headers = email_data.get('payload', {}).get('headers', [])
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
             sender  = next((h['value'] for h in headers if h['name'] == 'From'), '(Unknown Sender)')
-            snippet = email_data.get('snippet', '')
+            # Strip invisible filler characters (U+034F, combining grapheme joiner)
+            # that email marketers embed to defeat spam filters — they render as clutter.
+            snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
             is_unread = 'UNREAD' in email_data.get('labelIds', [])
 
             summary = summarize_email(subject, snippet)
@@ -229,7 +247,7 @@ def handle_sync_emails(event):
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"message": f"Successfully synced {saved_count} emails!", "emails": saved_emails})
+            "body": json.dumps({"message": f"Successfully synced {saved_count} emails!", "emails": saved_emails}, ensure_ascii=False)
         }
 
     except urllib.error.HTTPError as e:
@@ -346,7 +364,7 @@ def handle_draft_email(event):
             }
 
         # Call OpenAI to generate a reply draft
-        api_key = os.environ.get('OPENAI_API_KEY', '').strip()
+        api_key = get_secrets()['OPENAI_API_KEY']
         prompt = (
             f"You are a helpful email assistant. Write a professional and polite reply to the following email.\n\n"
             f"Subject: {subject}\n"
@@ -385,4 +403,86 @@ def handle_draft_email(event):
         return {
             "statusCode": 500,
             "body": json.dumps({"message": "Internal server error during draft generation", "error": str(e)})
+        }
+
+def handle_export(event):
+    try:
+        # Extract the user ID from the Cognito JWT claims
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
+            }
+
+        # Fetch all of this user's emails from DynamoDB (with pagination)
+        emails = []
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+        )
+        emails.extend(response.get('Items', []))
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            emails.extend(response.get('Items', []))
+
+        if not emails:
+            return {
+                "statusCode": 404,
+                "body": json.dumps({"error": "No emails found to export. Sync your inbox first."})
+            }
+
+        # Build a clean export — keep only the fields useful to the user
+        export_data = [
+            {
+                "subject": e.get("subject", ""),
+                "from":    e.get("from", ""),
+                "status":  e.get("status", ""),
+                "summary": e.get("summary", ""),
+                "content": e.get("content", "")
+            }
+            for e in emails
+        ]
+
+        # Upload the JSON file to S3 under a per-user path
+        s3 = boto3.client('s3')
+        bucket = os.environ['EXPORTS_BUCKET_NAME']
+        key = f"exports/{user_id}/email-summaries.json"
+
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(export_data, indent=2, ensure_ascii=False).encode('utf-8'),
+            ContentType='application/json'
+        )
+
+        # Generate a pre-signed URL valid for 15 minutes so the user can download the file
+        presigned_url = s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket, 'Key': key},
+            ExpiresIn=900  # 15 minutes
+        )
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "message": f"Exported {len(export_data)} emails successfully.",
+                "download_url": presigned_url
+            })
+        }
+
+    except Exception as e:
+        print(f"Error during export: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Internal server error during export", "error": str(e)})
         }
