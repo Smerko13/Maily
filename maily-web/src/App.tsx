@@ -18,6 +18,16 @@ interface Stats {
   top_senders: { sender: string; count: number }[];
 }
 
+type ThemeId = 'indigo' | 'ocean' | 'rose' | 'emerald' | 'midnight';
+
+const THEMES: { id: ThemeId; label: string }[] = [
+  { id: 'indigo',   label: 'Indigo'   },
+  { id: 'ocean',    label: 'Ocean'    },
+  { id: 'rose',     label: 'Rose'     },
+  { id: 'emerald',  label: 'Emerald'  },
+  { id: 'midnight', label: 'Midnight' },
+];
+
 function App() {
   const [message, setMessage] = useState<string>(''); // Google auth status (used in Settings tab)
   const [syncMessage, setSyncMessage] = useState<string>(''); // inbox sync status
@@ -34,7 +44,14 @@ function App() {
   const [exportUrl, setExportUrl] = useState<string>('');
   const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
   return localStorage.getItem('isGoogleConnected') === 'true'; // initialized from localStorage so it survives a page refresh
-}); 
+});
+  const [theme, setTheme] = useState<ThemeId>(
+    () => (localStorage.getItem('mailyTheme') as ThemeId) ?? 'indigo'
+  );
+
+  useEffect(() => {
+    localStorage.setItem('mailyTheme', theme);
+  }, [theme]);
 
   // Auto-load emails from DynamoDB on page load (for returning users who refresh the page)
   useEffect(() => {
@@ -226,12 +243,12 @@ function App() {
   return (
     <Authenticator loginMechanisms={['email']}>
       {({ signOut, user }) => (
-        <div className="app-layout">
+        <div className="app-layout" data-theme={theme}>
 
           {/* Sidebar */}
           <div className="sidebar">
             <div className="sidebar-header">
-              <h2 className="sidebar-logo">📧 Maily</h2>
+              <h2 className="sidebar-logo">📧 <span className="logo-text">Maily</span></h2>
               <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
 
@@ -474,6 +491,27 @@ function App() {
                 </header>
 
                 <div className="tab-body">
+                  {/* Theme picker */}
+                  <div className="settings-card" style={{ marginBottom: '20px' }}>
+                    <h3>🎨 Appearance</h3>
+                    <p>Choose a colour theme for Maily.</p>
+                    <div className="theme-picker-grid">
+                      {THEMES.map((t) => (
+                        <button
+                          key={t.id}
+                          className={`theme-swatch ${theme === t.id ? 'active' : ''}`}
+                          data-swatch={t.id}
+                          onClick={() => setTheme(t.id)}
+                          aria-label={`Select ${t.label} theme`}
+                        >
+                          <div className="theme-swatch-circle" />
+                          <span className="theme-swatch-label">{t.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Connected accounts */}
                   <div className="settings-card">
                     <h3>🔗 Connected Accounts</h3>
                     <p>

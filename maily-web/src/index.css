@@ -1,10 +1,10 @@
 :root {
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
-  color: #213547;
-  background-color: #f8f9fa;
+  color: #0f172a;
+  background-color: #f1f5f9;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
