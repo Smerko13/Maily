@@ -1,5 +1,3 @@
-# --- API Gateway ---
-
 resource "aws_apigatewayv2_api" "maily_http_api" {
   name        = "Maily-Backend-API"
   description = "API Gateway for Maily Backend"

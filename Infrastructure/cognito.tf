@@ -1,6 +1,3 @@
-# --- Amazon Cognito ---
-
-# Create a Cognito User Pool
 resource "aws_cognito_user_pool" "user_pool" {
   name = "maily-user-pool"
 

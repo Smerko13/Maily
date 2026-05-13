@@ -1,6 +1,3 @@
-
-// Use the pre-existing LabRole provided by the AWS Academy lab environment.
-// Lab accounts restrict iam:CreateRole, so we look up the existing role instead.
 data "aws_iam_role" "lab_role" {
   name = "LabRole"
 }
