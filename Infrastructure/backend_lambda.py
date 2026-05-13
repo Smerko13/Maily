@@ -75,6 +75,8 @@ def summarize_email(subject, snippet):
 
     return result['choices'][0]['message']['content'].strip()
 
+
+## main entry point for the Lambda function
 def lambda_handler(event, context):
     print("Received event:", json.dumps(event))
 
@@ -92,10 +94,70 @@ def lambda_handler(event, context):
         return handle_draft_email(event)
     elif http_method == 'POST' and path == '/export':
         return handle_export(event)
+    elif http_method == 'POST' and path == '/settings':
+        return handle_save_settings(event)
     else:
         return {
             "statusCode": 404,
             "body": json.dumps({"message": f"Route not found! Method: {http_method}, Path: {path}"})
+        }
+
+def handle_save_settings(event):
+    try:
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
+            }
+
+        body = json.loads(event.get('body', '{}'))
+        raw_limit = body.get('email_fetch_limit')
+
+        if raw_limit is None:
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Missing required field: email_fetch_limit"})
+            }
+
+        try:
+            limit = int(raw_limit)
+        except (ValueError, TypeError):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "email_fetch_limit must be an integer"})
+            }
+
+        if not (1 <= limit <= 100):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "email_fetch_limit must be between 1 and 100"})
+            }
+
+        users_table = dynamodb.Table('Maily-Users')
+        users_table.update_item(
+            Key={'userId': user_id},
+            UpdateExpression='SET email_fetch_limit = :l',
+            ExpressionAttributeValues={':l': limit}
+        )
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"message": f"Settings saved. Fetch limit set to {limit}."})
+        }
+
+    except Exception as e:
+        print(f"Error saving settings: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Internal server error while saving settings", "error": str(e)})
         }
 
 def handle_get_emails(event):
@@ -167,6 +229,7 @@ def handle_sync_emails(event):
         
         access_token = user_record['google_access_token']
         refresh_token = user_record.get('google_refresh_token')
+        fetch_limit = int(user_record.get('email_fetch_limit', 10))
 
         # Fetch the list of recent email IDs from Gmail, refreshing the token once if it has expired
         def gmail_get(url, token):
@@ -176,7 +239,7 @@ def handle_sync_emails(event):
 
         try:
             list_req = gmail_get(
-                'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+                f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}',
                 access_token
             )
             with urllib.request.urlopen(list_req) as resp:
@@ -186,7 +249,7 @@ def handle_sync_emails(event):
                 print("Access token expired, refreshing...")
                 access_token = refresh_google_access_token(user_id, refresh_token)
                 list_req = gmail_get(
-                    'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+                    f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}',
                     access_token
                 )
                 with urllib.request.urlopen(list_req) as resp:

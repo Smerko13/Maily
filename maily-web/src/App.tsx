@@ -47,6 +47,10 @@ function App() {
   const [draftLoading, setDraftLoading] = useState<boolean>(false);
   const [exportLoading, setExportLoading] = useState<boolean>(false);
   const [exportUrl, setExportUrl] = useState<string>('');
+  const [fetchLimit, setFetchLimit] = useState<number>(
+    () => parseInt(localStorage.getItem('mailyFetchLimit') ?? '10', 10)
+  );
+  const [fetchLimitSaving, setFetchLimitSaving] = useState<boolean>(false);
   const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
   return localStorage.getItem('isGoogleConnected') === 'true'; // initialized from localStorage so it survives a page refresh
 });
@@ -211,6 +215,33 @@ function App() {
       console.error('Error exporting emails:', error);
     } finally {
       setExportLoading(false);
+    }
+  };
+
+  // Save the email fetch limit preference to the backend
+  const saveFetchLimit = async (limit: number) => {
+    setFetchLimitSaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/settings`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email_fetch_limit: limit })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      localStorage.setItem('mailyFetchLimit', String(limit));
+      showToast(`Fetch limit saved: ${limit} emails per sync`, 'success');
+    } catch (error) {
+      console.error('Error saving settings:', error);
+      showToast('Failed to save settings. Please try again.', 'error');
+    } finally {
+      setFetchLimitSaving(false);
     }
   };
 
@@ -567,6 +598,39 @@ function App() {
                           <span className="theme-swatch-label">{t.label}</span>
                         </button>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* Email fetch limit */}
+                  <div className="settings-card" style={{ marginBottom: '20px' }}>
+                    <h3>📨 Email Fetch Limit</h3>
+                    <p>Choose how many emails are fetched and summarized each time you sync. Applies globally to all syncs and exports.</p>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.75rem' }}>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={fetchLimit}
+                        onChange={e => setFetchLimit(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+                        style={{
+                          width: '80px',
+                          padding: '0.4rem 0.6rem',
+                          borderRadius: '8px',
+                          border: '1px solid var(--border)',
+                          fontSize: '1rem',
+                          background: 'var(--surface)',
+                          color: 'var(--text)'
+                        }}
+                      />
+                      <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>emails per sync (1 – 100)</span>
+                      <button
+                        onClick={() => saveFetchLimit(fetchLimit)}
+                        disabled={fetchLimitSaving}
+                        className="btn-sync"
+                        style={{ marginLeft: 'auto' }}
+                      >
+                        {fetchLimitSaving ? 'Saving...' : 'Save'}
+                      </button>
                     </div>
                   </div>
 
