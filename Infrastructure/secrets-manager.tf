@@ -1,7 +1,3 @@
-# Store all sensitive credentials in Secrets Manager instead of plain Lambda environment variables.
-# Both Lambda functions retrieve these at runtime using the SDK, avoiding plaintext secrets
-# sitting in the Lambda console or Terraform state in cleartext.
-
 resource "aws_secretsmanager_secret" "maily_secrets" {
   name        = "maily/app-secrets"
   description = "Google OAuth credentials and OpenAI API key for Maily"

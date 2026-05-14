@@ -5,12 +5,9 @@ import os
 import boto3
 import time
 
-# Initialize the DynamoDB resource
 dynamodb = boto3.resource('dynamodb')
 users_table = dynamodb.Table('Maily-Users')
 
-# Secrets are fetched once per Lambda container (cold start) and cached in memory.
-# This avoids a Secrets Manager API call on every invocation.
 _secrets_cache = None
 
 def get_secrets():
@@ -24,11 +21,8 @@ def get_secrets():
 
 def lambda_handler(event, context):
     try:
-        # Extract the Cognito User ID from the API Gateway authorizer context
         authorizer = event.get('requestContext', {}).get('authorizer', {})
         
-        # Try different common API Gateway payload structures for the User ID
-        # Handle both payload format v2.0 (jwt.claims) and v1.0 (claims directly)
         if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
             user_id = authorizer['jwt']['claims'].get('sub')
         elif 'claims' in authorizer:

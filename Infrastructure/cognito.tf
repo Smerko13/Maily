@@ -14,7 +14,6 @@ resource "aws_cognito_user_pool" "user_pool" {
   auto_verified_attributes = ["email"]
   username_attributes = ["email"]
 
-  # We want to turn off MFA (as of now)
   mfa_configuration = "OFF"
 
     tags = {
@@ -23,7 +22,6 @@ resource "aws_cognito_user_pool" "user_pool" {
     }
 }
 
-# Create a Cognito User Pool Client
 resource "aws_cognito_user_pool_client" "maily_client" {
   name         = "maily-react-client"
   user_pool_id = aws_cognito_user_pool.user_pool.id

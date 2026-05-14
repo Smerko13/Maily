@@ -8,8 +8,6 @@ import urllib.error
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Maily-Emails')
 
-# Secrets are fetched once per Lambda container (cold start) and cached in memory.
-# This avoids a Secrets Manager API call on every invocation.
 _secrets_cache = None
 
 def get_secrets():
@@ -22,7 +20,6 @@ def get_secrets():
     return _secrets_cache
 
 def refresh_google_access_token(user_id, refresh_token):
-    # Exchange the refresh token for a new access token with Google
     secrets = get_secrets()
     client_id = secrets['GOOGLE_CLIENT_ID']
     client_secret = secrets['GOOGLE_CLIENT_SECRET']
@@ -42,7 +39,6 @@ def refresh_google_access_token(user_id, refresh_token):
 
     new_access_token = token_data['access_token']
 
-    # Save the new access token back to DynamoDB
     users_table = dynamodb.Table('Maily-Users')
     users_table.update_item(
         Key={'userId': user_id},
@@ -76,17 +72,15 @@ def summarize_email(subject, snippet):
     return result['choices'][0]['message']['content'].strip()
 
 
-## main entry point for the Lambda function
 def lambda_handler(event, context):
     print("Received event:", json.dumps(event))
 
-    # Handle both payload format v1.0 and v2.0
     http_method = event.get('httpMethod') or event.get('requestContext', {}).get('http', {}).get('method', '')
     path = event.get('path') or event.get('rawPath', '')
 
-    if http_method == 'GET' and path == '/hello':
+    if http_method == 'GET' and path == '/hello': 
         return handle_get_emails(event)
-    elif http_method == 'POST' and path == '/sync':
+    elif http_method == 'POST' and path == '/sync': 
         return handle_sync_emails(event)
     elif http_method == 'GET' and path == '/stats':
         return handle_get_stats(event)
@@ -162,7 +156,6 @@ def handle_save_settings(event):
 
 def handle_get_emails(event):
     try:
-        # Extract the user ID from the Cognito JWT claims
         authorizer = event.get('requestContext', {}).get('authorizer', {})
         user_id = None
         if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
@@ -176,8 +169,7 @@ def handle_get_emails(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Query all of this user's emails, paginating through DynamoDB results
-        # (a single query only returns up to 1MB; LastEvaluatedKey means there's more)
+
         items = []
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
@@ -203,7 +195,6 @@ def handle_get_emails(event):
 
 def handle_sync_emails(event):
     try:
-        # Extract the user ID from the Cognito JWT claims
         request_context = event.get('requestContext', {})
         authorizer = request_context.get('authorizer', {})
         
@@ -216,7 +207,6 @@ def handle_sync_emails(event):
         if not user_id:
             return {"statusCode": 400, "body": json.dumps({"message": "Could not find user ID"})}
         
-        # Look up the user's stored Google tokens from Maily-Users
         users_table = dynamodb.Table('Maily-Users')
         result = users_table.get_item(Key={'userId': user_id})
         user_record = result.get('Item')
@@ -231,7 +221,6 @@ def handle_sync_emails(event):
         refresh_token = user_record.get('google_refresh_token')
         fetch_limit = int(user_record.get('email_fetch_limit', 10))
 
-        # Fetch the list of recent email IDs from Gmail, refreshing the token once if it has expired
         def gmail_get(url, token):
             req = urllib.request.Request(url)
             req.add_header('Authorization', f'Bearer {token}')
@@ -264,7 +253,6 @@ def handle_sync_emails(event):
                 "body": json.dumps({"message": "No emails found in your Gmail inbox."})
             }
 
-        # Fetch metadata for each email and save to Maily-Emails
         saved_count = 0
         saved_emails = []
         for msg in messages:
@@ -281,8 +269,6 @@ def handle_sync_emails(event):
             headers = email_data.get('payload', {}).get('headers', [])
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
             sender  = next((h['value'] for h in headers if h['name'] == 'From'), '(Unknown Sender)')
-            # Strip invisible filler characters (U+034F, combining grapheme joiner)
-            # that email marketers embed to defeat spam filters — they render as clutter.
             snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
             is_unread = 'UNREAD' in email_data.get('labelIds', [])
 
@@ -332,7 +318,6 @@ def handle_sync_emails(event):
 
 def handle_get_stats(event):
     try:
-        # Extract the user ID from the Cognito JWT claims
         authorizer = event.get('requestContext', {}).get('authorizer', {})
         user_id = None
         if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
@@ -346,7 +331,6 @@ def handle_get_stats(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Fetch all of this user's emails from DynamoDB, with pagination
         emails = []
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
@@ -366,12 +350,10 @@ def handle_get_stats(event):
                 "body": json.dumps({"total": 0, "unread": 0, "read": 0, "top_senders": []})
             }
 
-        # Count read vs unread
         total = len(emails)
         unread = sum(1 for e in emails if e.get('status') == 'unread')
         read = total - unread
 
-        # Count emails per sender and return the top 5
         sender_counts = {}
         for e in emails:
             sender = e.get('from', 'Unknown')
@@ -400,7 +382,6 @@ def handle_get_stats(event):
 
 def handle_draft_email(event):
     try:
-        # Extract the user ID from the Cognito JWT claims
         authorizer = event.get('requestContext', {}).get('authorizer', {})
         user_id = None
         if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
@@ -414,7 +395,6 @@ def handle_draft_email(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Get the email details sent from the frontend
         body = json.loads(event.get('body', '{}'))
         subject = body.get('subject', '(No Subject)')
         summary = body.get('summary', '')
@@ -470,7 +450,6 @@ def handle_draft_email(event):
 
 def handle_export(event):
     try:
-        # Extract the user ID from the Cognito JWT claims
         authorizer = event.get('requestContext', {}).get('authorizer', {})
         user_id = None
         if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
@@ -484,7 +463,6 @@ def handle_export(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Fetch all of this user's emails from DynamoDB (with pagination)
         emails = []
         response = table.query(
             KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
@@ -503,7 +481,6 @@ def handle_export(event):
                 "body": json.dumps({"error": "No emails found to export. Sync your inbox first."})
             }
 
-        # Build a clean export — keep only the fields useful to the user
         export_data = [
             {
                 "subject": e.get("subject", ""),
@@ -515,7 +492,6 @@ def handle_export(event):
             for e in emails
         ]
 
-        # Upload the JSON file to S3 under a per-user path
         s3 = boto3.client('s3')
         bucket = os.environ['EXPORTS_BUCKET_NAME']
         key = f"exports/{user_id}/email-summaries.json"
@@ -527,11 +503,10 @@ def handle_export(event):
             ContentType='application/json'
         )
 
-        # Generate a pre-signed URL valid for 15 minutes so the user can download the file
         presigned_url = s3.generate_presigned_url(
             'get_object',
             Params={'Bucket': bucket, 'Key': key},
-            ExpiresIn=900  # 15 minutes
+            ExpiresIn=900  
         )
 
         return {
