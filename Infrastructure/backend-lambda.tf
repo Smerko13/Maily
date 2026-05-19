@@ -1,7 +1,3 @@
-data "aws_iam_role" "lab_role" {
-  name = "LabRole"
-}
-
 data "archive_file" "backend_lambda_zip" {
     type = "zip"
     source_file = "${path.module}/backend_lambda.py"
@@ -12,7 +8,7 @@ resource "aws_lambda_function" "maily_backend_lambda" {
     filename = "backend_lambda.zip"
     function_name = "Maily_Backend_Logic"
 
-    role = data.aws_iam_role.lab_role.arn
+    role = local.lab_role_arn
 
     handler = "backend_lambda.lambda_handler"
     runtime = "python3.12"

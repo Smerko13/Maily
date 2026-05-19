@@ -75,6 +75,10 @@ def summarize_email(subject, snippet):
 def lambda_handler(event, context):
     print("Received event:", json.dumps(event))
 
+    # Detect EventBridge scheduled event (not an HTTP request)
+    if event.get('source') == 'aws.events' or event.get('detail-type') == 'Scheduled Event':
+        return handle_scheduled_sync()
+
     http_method = event.get('httpMethod') or event.get('requestContext', {}).get('http', {}).get('method', '')
     path = event.get('path') or event.get('rawPath', '')
 
@@ -193,105 +197,147 @@ def handle_get_emails(event):
             "body": json.dumps({"message": "Failed to fetch data.", "error": str(e)})
         }
 
-def handle_sync_emails(event):
+def sync_user_emails(user_id, user_record):
+    """Core Gmail sync logic. Reused by both the HTTP /sync endpoint and the scheduled EventBridge trigger."""
+    access_token = user_record['google_access_token']
+    refresh_token = user_record.get('google_refresh_token')
+    fetch_limit = int(user_record.get('email_fetch_limit', 10))
+
+    def gmail_get(url, token):
+        req = urllib.request.Request(url)
+        req.add_header('Authorization', f'Bearer {token}')
+        return req
+
     try:
-        request_context = event.get('requestContext', {})
-        authorizer = request_context.get('authorizer', {})
-        
-        user_id = None
-        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
-            user_id = authorizer['jwt']['claims'].get('sub')
-        elif 'claims' in authorizer:
-            user_id = authorizer['claims'].get('sub')
-            
-        if not user_id:
-            return {"statusCode": 400, "body": json.dumps({"message": "Could not find user ID"})}
-        
-        users_table = dynamodb.Table('Maily-Users')
-        result = users_table.get_item(Key={'userId': user_id})
-        user_record = result.get('Item')
-        
-        if not user_record or not user_record.get('google_access_token'):
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"message": "Google account not connected. Please connect your Google account in Settings."})
-            }
-        
-        access_token = user_record['google_access_token']
-        refresh_token = user_record.get('google_refresh_token')
-        fetch_limit = int(user_record.get('email_fetch_limit', 10))
-
-        def gmail_get(url, token):
-            req = urllib.request.Request(url)
-            req.add_header('Authorization', f'Bearer {token}')
-            return req
-
-        try:
+        list_req = gmail_get(
+            f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}',
+            access_token
+        )
+        with urllib.request.urlopen(list_req) as resp:
+            messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
+    except urllib.error.HTTPError as e:
+        if e.code == 401 and refresh_token:
+            print(f"Access token expired for user {user_id}, refreshing...")
+            access_token = refresh_google_access_token(user_id, refresh_token)
             list_req = gmail_get(
                 f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}',
                 access_token
             )
             with urllib.request.urlopen(list_req) as resp:
                 messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
-        except urllib.error.HTTPError as e:
-            if e.code == 401 and refresh_token:
-                print("Access token expired, refreshing...")
-                access_token = refresh_google_access_token(user_id, refresh_token)
-                list_req = gmail_get(
-                    f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}',
-                    access_token
-                )
-                with urllib.request.urlopen(list_req) as resp:
-                    messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
-            else:
-                raise
+        else:
+            raise
 
-        if not messages:
+    if not messages:
+        return [], 0
+
+    saved_count = 0
+    saved_emails = []
+    for msg in messages:
+        email_id = msg['id']
+
+        detail_req = gmail_get(
+            f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{email_id}'
+            f'?format=metadata&metadataHeaders=Subject&metadataHeaders=From',
+            access_token
+        )
+        with urllib.request.urlopen(detail_req) as resp:
+            email_data = json.loads(resp.read().decode('utf-8'))
+
+        headers = email_data.get('payload', {}).get('headers', [])
+        subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
+        sender  = next((h['value'] for h in headers if h['name'] == 'From'), '(Unknown Sender)')
+        snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
+        is_unread = 'UNREAD' in email_data.get('labelIds', [])
+
+        summary = summarize_email(subject, snippet)
+
+        table.put_item(Item={
+            'userId':  user_id,
+            'emailId': email_id,
+            'subject': subject,
+            'from':    sender,
+            'content': snippet,
+            'summary': summary,
+            'status':  'unread' if is_unread else 'read'
+        })
+        saved_emails.append({
+            'emailId': email_id,
+            'subject': subject,
+            'from':    sender,
+            'content': snippet,
+            'summary': summary,
+            'status':  'unread' if is_unread else 'read'
+        })
+        saved_count += 1
+
+    return saved_emails, saved_count
+
+
+def handle_scheduled_sync():
+    """Called by EventBridge every 15 minutes. Syncs Gmail for every connected user."""
+    print("Starting scheduled sync for all users...")
+    users_table = dynamodb.Table('Maily-Users')
+
+    response = users_table.scan()
+    users = response.get('Items', [])
+    while 'LastEvaluatedKey' in response:
+        response = users_table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+        users.extend(response.get('Items', []))
+
+    success_count = 0
+    fail_count = 0
+    for user in users:
+        user_id = user.get('userId')
+        if not user_id or not user.get('google_access_token'):
+            continue  # skip users who haven't connected Google
+        try:
+            _, count = sync_user_emails(user_id, user)
+            print(f"Synced {count} emails for user {user_id}")
+            success_count += 1
+        except Exception as e:
+            print(f"Failed to sync user {user_id}: {e}")
+            fail_count += 1
+
+    print(f"Scheduled sync complete. Success: {success_count}, Failed: {fail_count}")
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"message": f"Scheduled sync complete. Success: {success_count}, Failed: {fail_count}"})
+    }
+
+
+def handle_sync_emails(event):
+    try:
+        request_context = event.get('requestContext', {})
+        authorizer = request_context.get('authorizer', {})
+
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {"statusCode": 400, "body": json.dumps({"message": "Could not find user ID"})}
+
+        users_table = dynamodb.Table('Maily-Users')
+        result = users_table.get_item(Key={'userId': user_id})
+        user_record = result.get('Item')
+
+        if not user_record or not user_record.get('google_access_token'):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"message": "Google account not connected. Please connect your Google account in Settings."})
+            }
+
+        saved_emails, saved_count = sync_user_emails(user_id, user_record)
+
+        if saved_count == 0:
             return {
                 "statusCode": 200,
                 "headers": {"Content-Type": "application/json"},
                 "body": json.dumps({"message": "No emails found in your Gmail inbox."})
             }
-
-        saved_count = 0
-        saved_emails = []
-        for msg in messages:
-            email_id = msg['id']
-
-            detail_req = gmail_get(
-                f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{email_id}'
-                f'?format=metadata&metadataHeaders=Subject&metadataHeaders=From',
-                access_token
-            )
-            with urllib.request.urlopen(detail_req) as resp:
-                email_data = json.loads(resp.read().decode('utf-8'))
-
-            headers = email_data.get('payload', {}).get('headers', [])
-            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
-            sender  = next((h['value'] for h in headers if h['name'] == 'From'), '(Unknown Sender)')
-            snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
-            is_unread = 'UNREAD' in email_data.get('labelIds', [])
-
-            summary = summarize_email(subject, snippet)
-
-            table.put_item(Item={
-                'userId':  user_id,
-                'emailId': email_id,
-                'subject': subject,
-                'from':    sender,
-                'content': snippet,
-                'summary': summary,
-                'status':  'unread' if is_unread else 'read'
-            })
-            saved_emails.append({
-                'emailId': email_id,
-                'subject': subject,
-                'from':    sender,
-                'content': snippet,
-                'summary': summary,
-                'status':  'unread' if is_unread else 'read'
-            })
-            saved_count += 1
 
         return {
             "statusCode": 200,
@@ -406,7 +452,6 @@ def handle_draft_email(event):
                 "body": json.dumps({"error": "No email content provided to draft a reply for."})
             }
 
-        # Call OpenAI to generate a reply draft
         api_key = get_secrets()['OPENAI_API_KEY']
         prompt = (
             f"You are a helpful email assistant. Write a professional and polite reply to the following email.\n\n"

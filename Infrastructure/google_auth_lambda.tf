@@ -8,7 +8,7 @@ resource "aws_lambda_function" "google_auth_lambda" {
   filename         = "google_auth.zip"
   function_name    = "Maily-Google-Auth"
   
-  role             = data.aws_iam_role.lab_role.arn
+  role             = local.lab_role_arn
   
   handler          = "google_auth.lambda_handler"
   runtime          = "python3.12"
