@@ -71,14 +71,44 @@ def lambda_handler(event, context):
         
         print("Google Tokens received successfully!")
 
-        # Save the tokens to DynamoDB, linked to the user's Cognito ID
-        users_table.put_item(
-            Item={
-                'userId': user_id,
-                'google_access_token': google_data.get('access_token'),
-                'google_refresh_token': google_data.get('refresh_token'),
-                'token_expires_at': int(time.time()) + google_data.get('expires_in', 3600)
-            }
+        access_token = google_data.get('access_token')
+        refresh_token = google_data.get('refresh_token')
+        expires_at = int(time.time()) + google_data.get('expires_in', 3600)
+
+        # Fetch the Gmail email address for this account
+        profile_req = urllib.request.Request('https://www.googleapis.com/gmail/v1/users/me/profile')
+        profile_req.add_header('Authorization', f'Bearer {access_token}')
+        with urllib.request.urlopen(profile_req) as resp:
+            profile = json.loads(resp.read().decode('utf-8'))
+        google_email = profile.get('emailAddress')
+        print(f"Connecting Google account: {google_email}")
+
+        # Read the user's existing accounts list
+        result = users_table.get_item(Key={'userId': user_id})
+        existing_item = result.get('Item', {})
+        accounts = existing_item.get('google_accounts', [])
+
+        # If Google didn't return a refresh_token (happens on re-auth), keep the existing one
+        if not refresh_token:
+            existing = next((a for a in accounts if a.get('email') == google_email), None)
+            if existing:
+                refresh_token = existing.get('refresh_token')
+
+        # Replace the account if it already exists, otherwise append
+        new_account = {
+            'email': google_email,
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'token_expires_at': expires_at
+        }
+        accounts = [a for a in accounts if a.get('email') != google_email]
+        accounts.append(new_account)
+
+        # Save the updated accounts list (preserves email_fetch_limit and other fields)
+        users_table.update_item(
+            Key={'userId': user_id},
+            UpdateExpression='SET google_accounts = :accounts',
+            ExpressionAttributeValues={':accounts': accounts}
         )
 
         return {
@@ -89,7 +119,8 @@ def lambda_handler(event, context):
             },
             "body": json.dumps({
                 "message": "Successfully authenticated with Google and saved tokens!",
-                "google_status": "connected"
+                "google_status": "connected",
+                "email": google_email
             })
         }
 

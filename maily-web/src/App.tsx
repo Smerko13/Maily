@@ -9,6 +9,7 @@ interface Email {
   content: string;
   summary?: string;
   status?: string;
+  google_email?: string;
 }
 
 interface Stats {
@@ -51,9 +52,8 @@ function App() {
     () => parseInt(localStorage.getItem('mailyFetchLimit') ?? '10', 10)
   );
   const [fetchLimitSaving, setFetchLimitSaving] = useState<boolean>(false);
-  const [isGoogleConnected, setIsGoogleConnected] = useState(() => { 
-  return localStorage.getItem('isGoogleConnected') === 'true'; // initialized from localStorage so it survives a page refresh
-});
+  const [connectedAccounts, setConnectedAccounts] = useState<{ email: string }[]>([]);
+  const [accountFilter, setAccountFilter] = useState<string>('all');
   const [theme, setTheme] = useState<ThemeId>(
     () => (localStorage.getItem('mailyTheme') as ThemeId) ?? 'indigo'
   );
@@ -62,14 +62,37 @@ function App() {
     localStorage.setItem('mailyTheme', theme);
   }, [theme]);
 
-  // Auto-load emails from DynamoDB on page load (for returning users who refresh the page)
+  // Load connected Google accounts on page load
+  useEffect(() => {
+    const loadAccounts = async () => {
+      try {
+        const session = await fetchAuthSession();
+        const token = session.tokens?.idToken?.toString();
+        if (!token) return;
+        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/accounts`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        setConnectedAccounts(data.accounts || []);
+      } catch {
+        // silently fail
+      }
+    };
+    loadAccounts();
+  }, []);
+
+  // Auto-load emails from DynamoDB on page load and whenever the account filter changes
   useEffect(() => {
     const loadEmails = async () => {
       try {
         const session = await fetchAuthSession();
         const token = session.tokens?.idToken?.toString();
-        if (!token) return; // not logged in yet, silently skip
-        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/hello`, {
+        if (!token) return;
+        const url = accountFilter === 'all'
+          ? `${import.meta.env.VITE_API_BASE_URL}/hello`
+          : `${import.meta.env.VITE_API_BASE_URL}/hello?account=${encodeURIComponent(accountFilter)}`;
+        const response = await fetch(url, {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (!response.ok) return;
@@ -80,9 +103,9 @@ function App() {
       }
     };
     loadEmails();
-  }, []);
+  }, [accountFilter]);
 
-  // Google login handler
+  // Google login handler — works for both first account and adding more
  const loginWithGoogle = useGoogleLogin({
     flow: 'auth-code',
     scope: 'https://www.googleapis.com/auth/gmail.readonly',
@@ -111,19 +134,20 @@ function App() {
           throw new Error(`HTTP error! status: ${response.status}, details: ${errorData}`);
         }
 
-        localStorage.setItem('isGoogleConnected', 'true');
-        setIsGoogleConnected(true);
-        
         const data = await response.json();
-        console.log("Backend response:", data);
-        
-        showToast('Google account connected successfully!', 'success');
-        
+        // Add the newly connected account to the list (avoid duplicates)
+        if (data.email) {
+          setConnectedAccounts(prev =>
+            prev.some(a => a.email === data.email)
+              ? prev
+              : [...prev, { email: data.email }]
+          );
+        }
+        showToast(`Connected ${data.email ?? 'Google account'} successfully!`, 'success');
+
       } catch (error) {
         console.error('Error sending code to backend:', error);
         showToast('Error connecting to Google. Please try again.', 'error');
-        setIsGoogleConnected(false); 
-        localStorage.removeItem('isGoogleConnected');
       }
     },
     onError: (errorResponse) => {
@@ -131,6 +155,27 @@ function App() {
       showToast('Error connecting to Google. Please try again.', 'error');
     },
   });
+
+  // Disconnect a Google account
+  const disconnectGoogle = async (email: string) => {
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/auth/google`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      if (!response.ok) throw new Error('Failed to disconnect');
+      setConnectedAccounts(prev => prev.filter(a => a.email !== email));
+      setEmails(prev => prev.filter(e => e.google_email !== email));
+      if (accountFilter === email) setAccountFilter('all');
+      showToast(`Disconnected ${email}`, 'success');
+    } catch {
+      showToast('Failed to disconnect account. Please try again.', 'error');
+    }
+  };
 
   // Fetch statistics function
   const fetchStats = async () => {
@@ -327,6 +372,27 @@ function App() {
                   </button>
                 </header>
 
+                {/* Account filter tabs — only visible when 2+ accounts are connected */}
+                {connectedAccounts.length > 1 && (
+                  <div className="account-filter-bar">
+                    <button
+                      className={`filter-tab ${accountFilter === 'all' ? 'active' : ''}`}
+                      onClick={() => setAccountFilter('all')}
+                    >
+                      All Accounts
+                    </button>
+                    {connectedAccounts.map(a => (
+                      <button
+                        key={a.email}
+                        className={`filter-tab ${accountFilter === a.email ? 'active' : ''}`}
+                        onClick={() => setAccountFilter(a.email)}
+                      >
+                        {a.email}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <div className="tab-body">
                   <div className="email-card">
                     <div className="email-card-header">
@@ -353,9 +419,14 @@ function App() {
                           <div key={index} className="email-item">
                             <div className="email-item-header">
                               <strong className="email-subject">{email.subject}</strong>
-                              <span className="email-status">
-                                STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}
-                              </span>
+                              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                {email.google_email && connectedAccounts.length > 1 && (
+                                  <span className="email-account-badge">{email.google_email}</span>
+                                )}
+                                <span className="email-status">
+                                  STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}
+                                </span>
+                              </div>
                             </div>
                             {email.summary && (
                               <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>
@@ -638,29 +709,36 @@ function App() {
                   <div className="settings-card">
                     <h3>🔗 Connected Accounts</h3>
                     <p>
-                      Connect your email accounts to Maily to allow our smart AI to analyze, summarize, and assist you with your inbox.
+                      Connect your Google accounts to Maily. You can add multiple accounts and filter between them in the Inbox.
                     </p>
 
-                    <div className={`account-row ${isGoogleConnected ? 'connected' : ''}`}>
+                    {/* One row per connected account */}
+                    {connectedAccounts.map(account => (
+                      <div key={account.email} className="account-row connected">
+                        <div className="account-info">
+                          <span className="account-icon">✉️</span>
+                          <div>
+                            <strong className="account-name">{account.email}</strong>
+                            <span className="account-status-connected">✅ Connected</span>
+                          </div>
+                        </div>
+                        <button onClick={() => disconnectGoogle(account.email)} className="btn-disconnect">
+                          Disconnect
+                        </button>
+                      </div>
+                    ))}
+
+                    {/* Add another account row */}
+                    <div className="account-row">
                       <div className="account-info">
-                        <span className="account-icon">✉️</span>
+                        <span className="account-icon">➕</span>
                         <div>
-                          <strong className="account-name">Google Workspace / Gmail</strong>
-                          {isGoogleConnected ? (
-                            <span className="account-status-connected">✅ Connected successfully</span>
-                          ) : (
-                            <span className="account-status-disconnected">Not connected</span>
-                          )}
+                          <strong className="account-name">Add Google Account</strong>
+                          <span className="account-status-disconnected">Connect another Gmail or Google Workspace</span>
                         </div>
                       </div>
-
-                      {isGoogleConnected ? (
-                        <button disabled className="btn-connected">Connected</button>
-                      ) : (
-                        <button onClick={() => loginWithGoogle()} className="btn-connect">Connect</button>
-                      )}
+                      <button onClick={() => loginWithGoogle()} className="btn-connect">Connect</button>
                     </div>
-
                   </div>
                 </div>
               </>

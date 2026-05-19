@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import urllib.parse
 import boto3
 import urllib.request
@@ -19,7 +20,7 @@ def get_secrets():
         _secrets_cache = json.loads(response['SecretString'])
     return _secrets_cache
 
-def refresh_google_access_token(user_id, refresh_token):
+def refresh_google_access_token(user_id, google_email, refresh_token):
     secrets = get_secrets()
     client_id = secrets['GOOGLE_CLIENT_ID']
     client_secret = secrets['GOOGLE_CLIENT_SECRET']
@@ -39,11 +40,19 @@ def refresh_google_access_token(user_id, refresh_token):
 
     new_access_token = token_data['access_token']
 
+    # Update just this account's token inside the google_accounts list
     users_table = dynamodb.Table('Maily-Users')
+    result = users_table.get_item(Key={'userId': user_id})
+    accounts = result.get('Item', {}).get('google_accounts', [])
+    for account in accounts:
+        if account.get('email') == google_email:
+            account['access_token'] = new_access_token
+            account['token_expires_at'] = int(time.time()) + 3600
+            break
     users_table.update_item(
         Key={'userId': user_id},
-        UpdateExpression='SET google_access_token = :t',
-        ExpressionAttributeValues={':t': new_access_token}
+        UpdateExpression='SET google_accounts = :accounts',
+        ExpressionAttributeValues={':accounts': accounts}
     )
 
     return new_access_token
@@ -86,6 +95,10 @@ def lambda_handler(event, context):
         return handle_get_emails(event)
     elif http_method == 'POST' and path == '/sync': 
         return handle_sync_emails(event)
+    elif http_method == 'GET' and path == '/accounts':
+        return handle_get_accounts(event)
+    elif http_method == 'DELETE' and path == '/auth/google':
+        return handle_disconnect_google(event)
     elif http_method == 'GET' and path == '/stats':
         return handle_get_stats(event)
     elif http_method == 'POST' and path == '/draft':
@@ -173,6 +186,9 @@ def handle_get_emails(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
+        # Optional filter: ?account=user@gmail.com
+        query_params = event.get('queryStringParameters') or {}
+        account_filter = query_params.get('account')
 
         items = []
         response = table.query(
@@ -185,6 +201,10 @@ def handle_get_emails(event):
                 ExclusiveStartKey=response['LastEvaluatedKey']
             )
             items.extend(response.get('Items', []))
+
+        if account_filter:
+            items = [e for e in items if e.get('google_email') == account_filter]
+
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
@@ -197,11 +217,11 @@ def handle_get_emails(event):
             "body": json.dumps({"message": "Failed to fetch data.", "error": str(e)})
         }
 
-def sync_user_emails(user_id, user_record):
-    """Core Gmail sync logic. Reused by both the HTTP /sync endpoint and the scheduled EventBridge trigger."""
-    access_token = user_record['google_access_token']
-    refresh_token = user_record.get('google_refresh_token')
-    fetch_limit = int(user_record.get('email_fetch_limit', 10))
+def sync_single_account(user_id, account, fetch_limit):
+    """Fetch and store emails for one connected Google account."""
+    google_email = account['email']
+    access_token = account['access_token']
+    refresh_token = account.get('refresh_token')
 
     def gmail_get(url, token):
         req = urllib.request.Request(url)
@@ -217,8 +237,8 @@ def sync_user_emails(user_id, user_record):
             messages = json.loads(resp.read().decode('utf-8')).get('messages', [])
     except urllib.error.HTTPError as e:
         if e.code == 401 and refresh_token:
-            print(f"Access token expired for user {user_id}, refreshing...")
-            access_token = refresh_google_access_token(user_id, refresh_token)
+            print(f"Token expired for {google_email}, refreshing...")
+            access_token = refresh_google_access_token(user_id, google_email, refresh_token)
             list_req = gmail_get(
                 f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}',
                 access_token
@@ -234,10 +254,11 @@ def sync_user_emails(user_id, user_record):
     saved_count = 0
     saved_emails = []
     for msg in messages:
-        email_id = msg['id']
+        raw_id = msg['id']
+        email_id = f"{google_email}#{raw_id}"  # prefix keeps emailId unique across accounts
 
         detail_req = gmail_get(
-            f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{email_id}'
+            f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{raw_id}'
             f'?format=metadata&metadataHeaders=Subject&metadataHeaders=From',
             access_token
         )
@@ -253,25 +274,44 @@ def sync_user_emails(user_id, user_record):
         summary = summarize_email(subject, snippet)
 
         table.put_item(Item={
-            'userId':  user_id,
-            'emailId': email_id,
-            'subject': subject,
-            'from':    sender,
-            'content': snippet,
-            'summary': summary,
-            'status':  'unread' if is_unread else 'read'
+            'userId':       user_id,
+            'emailId':      email_id,
+            'subject':      subject,
+            'from':         sender,
+            'content':      snippet,
+            'summary':      summary,
+            'status':       'unread' if is_unread else 'read',
+            'google_email': google_email
         })
         saved_emails.append({
-            'emailId': email_id,
-            'subject': subject,
-            'from':    sender,
-            'content': snippet,
-            'summary': summary,
-            'status':  'unread' if is_unread else 'read'
+            'emailId':      email_id,
+            'subject':      subject,
+            'from':         sender,
+            'content':      snippet,
+            'summary':      summary,
+            'status':       'unread' if is_unread else 'read',
+            'google_email': google_email
         })
         saved_count += 1
 
     return saved_emails, saved_count
+
+
+def sync_user_emails(user_id, user_record):
+    """Syncs all connected Google accounts for a user. Used by both /sync and EventBridge."""
+    accounts = user_record.get('google_accounts', [])
+    fetch_limit = int(user_record.get('email_fetch_limit', 10))
+
+    all_emails = []
+    total_count = 0
+    for account in accounts:
+        if not account.get('access_token'):
+            continue
+        emails, count = sync_single_account(user_id, account, fetch_limit)
+        all_emails.extend(emails)
+        total_count += count
+
+    return all_emails, total_count
 
 
 def handle_scheduled_sync():
@@ -289,7 +329,7 @@ def handle_scheduled_sync():
     fail_count = 0
     for user in users:
         user_id = user.get('userId')
-        if not user_id or not user.get('google_access_token'):
+        if not user_id or not user.get('google_accounts'):
             continue  # skip users who haven't connected Google
         try:
             _, count = sync_user_emails(user_id, user)
@@ -324,10 +364,10 @@ def handle_sync_emails(event):
         result = users_table.get_item(Key={'userId': user_id})
         user_record = result.get('Item')
 
-        if not user_record or not user_record.get('google_access_token'):
+        if not user_record or not user_record.get('google_accounts'):
             return {
                 "statusCode": 400,
-                "body": json.dumps({"message": "Google account not connected. Please connect your Google account in Settings."})
+                "body": json.dumps({"message": "No Google accounts connected. Please connect a Google account in Settings."})
             }
 
         saved_emails, saved_count = sync_user_emails(user_id, user_record)
@@ -569,3 +609,91 @@ def handle_export(event):
             "statusCode": 500,
             "body": json.dumps({"message": "Internal server error during export", "error": str(e)})
         }
+
+
+def handle_get_accounts(event):
+    """Returns the list of connected Google accounts for the logged-in user (emails only, no tokens)."""
+    try:
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized"})}
+
+        users_table = dynamodb.Table('Maily-Users')
+        result = users_table.get_item(Key={'userId': user_id})
+        accounts = result.get('Item', {}).get('google_accounts', [])
+
+        # Never send tokens to the frontend
+        safe_accounts = [{'email': a['email']} for a in accounts if a.get('email')]
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"accounts": safe_accounts})
+        }
+    except Exception as e:
+        print(f"Error getting accounts: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+
+
+def handle_disconnect_google(event):
+    """Removes a Google account from the user's list and deletes their associated emails."""
+    try:
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        user_id = None
+        if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
+            user_id = authorizer['jwt']['claims'].get('sub')
+        elif 'claims' in authorizer:
+            user_id = authorizer['claims'].get('sub')
+
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized"})}
+
+        body = json.loads(event.get('body', '{}'))
+        google_email = body.get('email')
+
+        if not google_email:
+            return {"statusCode": 400, "body": json.dumps({"error": "Missing required field: email"})}
+
+        # Remove account from the list
+        users_table = dynamodb.Table('Maily-Users')
+        result = users_table.get_item(Key={'userId': user_id})
+        accounts = result.get('Item', {}).get('google_accounts', [])
+        updated_accounts = [a for a in accounts if a.get('email') != google_email]
+        users_table.update_item(
+            Key={'userId': user_id},
+            UpdateExpression='SET google_accounts = :accounts',
+            ExpressionAttributeValues={':accounts': updated_accounts}
+        )
+
+        # Delete all emails that belong to this Google account
+        all_emails = []
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+        )
+        all_emails.extend(response.get('Items', []))
+        while 'LastEvaluatedKey' in response:
+            response = table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
+                ExclusiveStartKey=response['LastEvaluatedKey']
+            )
+            all_emails.extend(response.get('Items', []))
+
+        with table.batch_writer() as batch:
+            for email in all_emails:
+                if email.get('google_email') == google_email:
+                    batch.delete_item(Key={'userId': user_id, 'emailId': email['emailId']})
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"message": f"Disconnected {google_email} and removed their emails."})
+        }
+    except Exception as e:
+        print(f"Error disconnecting account: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
