@@ -12,12 +12,7 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
-    "noEmit": true,    cd ..
-    git add maily-web/package.json maily-web/package-lock.json
-    git commit -m "Fix: update lock file with @types/node"
-    git push origin main
-
-    /* Linting */
+    "noEmit": true, 
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
