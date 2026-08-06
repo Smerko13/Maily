@@ -15,6 +15,18 @@ resource "aws_dynamodb_table" "maily_emails" {
         type = "S"
     }
 
+    attribute {
+        name = "threadId"
+        type = "S"
+    }
+
+    global_secondary_index {
+        name            = "threadId-index"
+        hash_key        = "userId"
+        range_key       = "threadId"
+        projection_type = "ALL"
+    }
+
     point_in_time_recovery {
       enabled = true
     }

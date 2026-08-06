@@ -31,6 +31,7 @@ resource "aws_amplify_app" "maily_frontend" {
     VITE_USER_POOL_ID        = aws_cognito_user_pool.user_pool.id
     VITE_USER_POOL_CLIENT_ID = aws_cognito_user_pool_client.maily_client.id
     VITE_GOOGLE_CLIENT_ID    = var.google_client_id
+    VITE_MICROSOFT_CLIENT_ID = var.microsoft_client_id
     VITE_API_BASE_URL        = "https://${aws_apigatewayv2_api.maily_http_api.id}.execute-api.us-east-1.amazonaws.com"
   }
 

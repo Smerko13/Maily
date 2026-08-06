@@ -287,6 +287,10 @@
   cursor: default;
 }
 
+.email-item-clickable {
+  cursor: pointer;
+}
+
 .email-item:hover {
   border-color: #c7d2fe;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.06);
@@ -332,6 +336,140 @@
   color: var(--text-muted);
   font-size: 0.83em;
   line-height: 1.55;
+}
+
+.email-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.attachment-chip {
+  padding: 5px 12px;
+  background-color: #f1f5f9;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.78em;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+}
+
+.attachment-chip:hover:not(:disabled) {
+  background-color: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.attachment-chip:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn-back {
+  padding: 8px 16px;
+  background-color: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85em;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--text-primary);
+  transition: all 0.15s ease;
+}
+
+.btn-back:hover {
+  background-color: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.email-body-frame {
+  width: 100%;
+  min-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.email-body-text {
+  margin: 0;
+  padding: 12px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 0.85em;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.email-detail-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 4px 16px;
+}
+
+.thread-message {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-raised);
+  overflow: hidden;
+}
+
+.thread-message.expanded {
+  border-color: #c7d2fe;
+}
+
+.thread-message-header {
+  padding: 14px 18px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.thread-message-header:hover {
+  background-color: var(--surface);
+}
+
+.thread-message-from-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.thread-message-from {
+  font-size: 0.88em;
+  color: var(--text-primary);
+}
+
+.thread-message-date {
+  font-size: 0.75em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.thread-message-preview {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.82em;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-message-content {
+  padding: 0 18px 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
 }
 
 .empty-inbox {

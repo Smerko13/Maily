@@ -1,6 +1,7 @@
 import json
 import urllib.request
 import urllib.parse
+import urllib.error
 import os
 import boto3
 import time
@@ -22,7 +23,7 @@ def get_secrets():
 def lambda_handler(event, context):
     try:
         authorizer = event.get('requestContext', {}).get('authorizer', {})
-        
+
         if 'jwt' in authorizer and 'claims' in authorizer['jwt']:
             user_id = authorizer['jwt']['claims'].get('sub')
         elif 'claims' in authorizer:
@@ -38,71 +39,70 @@ def lambda_handler(event, context):
         # get the auth code from the request body
         body = json.loads(event.get('body', '{}'))
         auth_code = body.get('code')
+        redirect_uri = body.get('redirect_uri')
 
-        if not auth_code:
+        if not auth_code or not redirect_uri:
             return {
                 "statusCode": 400,
-                "body": json.dumps({"error": "No auth code provided in the request"})
+                "body": json.dumps({"error": "Missing required fields: code, redirect_uri"})
             }
 
         # get client credentials from Secrets Manager
         secrets = get_secrets()
-        client_id = secrets['GOOGLE_CLIENT_ID']
-        client_secret = secrets['GOOGLE_CLIENT_SECRET']
-        redirect_uri = 'postmessage'
+        client_id = secrets['MICROSOFT_CLIENT_ID']
+        client_secret = secrets['MICROSOFT_CLIENT_SECRET']
 
         # prepare the data for the token exchange request
-        url = 'https://oauth2.googleapis.com/token'
+        url = 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
         data = urllib.parse.urlencode({
             'code': auth_code,
             'client_id': client_id,
             'client_secret': client_secret,
             'redirect_uri': redirect_uri,
-            'grant_type': 'authorization_code'
+            'grant_type': 'authorization_code',
+            'scope': 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read'
         }).encode('utf-8')
 
-        # Explicitly tell Google we are sending form data
         req = urllib.request.Request(url, data=data, method='POST')
         req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-        
-        # Invoke the request to Google's token endpoint
+
         with urllib.request.urlopen(req) as response:
-            google_data = json.loads(response.read().decode('utf-8'))
-        
-        print("Google Tokens received successfully!")
+            token_data = json.loads(response.read().decode('utf-8'))
 
-        access_token = google_data.get('access_token')
-        refresh_token = google_data.get('refresh_token')
-        expires_at = int(time.time()) + google_data.get('expires_in', 3600)
+        print("Microsoft tokens received successfully!")
 
-        # Fetch the Gmail email address for this account
-        profile_req = urllib.request.Request('https://www.googleapis.com/gmail/v1/users/me/profile')
+        access_token = token_data.get('access_token')
+        refresh_token = token_data.get('refresh_token')
+        expires_at = int(time.time()) + token_data.get('expires_in', 3600)
+
+        # Fetch the mailbox address for this account
+        profile_req = urllib.request.Request('https://graph.microsoft.com/v1.0/me')
         profile_req.add_header('Authorization', f'Bearer {access_token}')
         with urllib.request.urlopen(profile_req) as resp:
             profile = json.loads(resp.read().decode('utf-8'))
-        google_email = profile.get('emailAddress')
-        print(f"Connecting Google account: {google_email}")
+        outlook_email = profile.get('mail') or profile.get('userPrincipalName')
+        print(f"Connecting Outlook account: {outlook_email}")
 
         # Read the user's existing accounts list
         result = users_table.get_item(Key={'userId': user_id})
         existing_item = result.get('Item', {})
         accounts = existing_item.get('email_accounts', [])
 
-        # If Google didn't return a refresh_token (happens on re-auth), keep the existing one
+        # If Microsoft didn't return a refresh_token (happens on re-auth), keep the existing one
         if not refresh_token:
-            existing = next((a for a in accounts if a.get('email') == google_email and a.get('provider') == 'gmail'), None)
+            existing = next((a for a in accounts if a.get('email') == outlook_email and a.get('provider') == 'outlook'), None)
             if existing:
                 refresh_token = existing.get('refresh_token')
 
         # Replace the account if it already exists, otherwise append
         new_account = {
-            'provider': 'gmail',
-            'email': google_email,
+            'provider': 'outlook',
+            'email': outlook_email,
             'access_token': access_token,
             'refresh_token': refresh_token,
             'token_expires_at': expires_at
         }
-        accounts = [a for a in accounts if not (a.get('email') == google_email and a.get('provider') == 'gmail')]
+        accounts = [a for a in accounts if not (a.get('email') == outlook_email and a.get('provider') == 'outlook')]
         accounts.append(new_account)
 
         # Save the updated accounts list (preserves email_fetch_limit and other fields)
@@ -119,19 +119,19 @@ def lambda_handler(event, context):
                 "Access-Control-Allow-Origin": "*"
             },
             "body": json.dumps({
-                "message": "Successfully authenticated with Google and saved tokens!",
-                "google_status": "connected",
-                "email": google_email
+                "message": "Successfully authenticated with Microsoft and saved tokens!",
+                "outlook_status": "connected",
+                "email": outlook_email
             })
         }
 
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
-        print(f"Google API Error: {error_body}")
+        print(f"Microsoft API Error: {error_body}")
         return {
             "statusCode": e.code,
             "body": json.dumps({
-                "error": "Google authentication failed",
+                "error": "Microsoft authentication failed",
                 "details": error_body
             })
         }

@@ -19,6 +19,20 @@ variable "openai_api_key" {
   nullable = false
 }
 
+variable "microsoft_client_id" {
+  description = "Azure AD (Entra ID) Application (client) ID for the Outlook authentication Lambda function"
+  type        = string
+  sensitive   = true
+  nullable    = false
+}
+
+variable "microsoft_client_secret" {
+  description = "Azure AD (Entra ID) client secret for the Outlook authentication Lambda function"
+  type        = string
+  sensitive   = true
+  nullable    = false
+}
+
 variable "github_token" {
   description = "GitHub Personal Access Token (classic, with 'repo' scope) for Amplify to clone the repository"
   type        = string
