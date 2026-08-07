@@ -172,6 +172,60 @@ resource "aws_apigatewayv2_route" "mark_read_route" {
     authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
+resource "aws_apigatewayv2_route" "labels_get_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "GET /labels"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "labels_create_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "POST /labels"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "labels_update_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "PUT /labels"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "labels_delete_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "DELETE /labels"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "smart_categories_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "GET /smart-categories"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "smart_category_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "GET /smart-category"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
 resource "aws_apigatewayv2_stage" "default_stage" {
     api_id = aws_apigatewayv2_api.maily_http_api.id
     name = "$default"

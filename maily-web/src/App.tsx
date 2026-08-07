@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
@@ -16,6 +16,7 @@ type Provider = 'gmail' | 'outlook';
 interface Email {
   emailId?: string;
   subject: string;
+  from?: string;
   content: string;
   summary?: string;
   status?: string;
@@ -27,11 +28,79 @@ interface Email {
   receivedAt?: string;
   bodyText?: string | null;
   bodyHtml?: string | null;
+  labels?: string[];
+  providerLabels?: string[];
+  categoryItemId?: string;
 }
 
 interface ConnectedAccount {
   email: string;
   provider: Provider;
+}
+
+interface LabelDef {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+}
+
+// A label whose id starts with "custom#" belongs to this user and can be edited/deleted; anything
+// else is an app-wide preset (see PRESET_LABELS in backend_lambda.py) and is shown read-only.
+function isCustomLabel(label: LabelDef): boolean {
+  return label.id.startsWith('custom#');
+}
+
+interface CategoryItem {
+  itemId: string;
+  categoryType: string;
+  fields: Record<string, string | null>;
+  contributingEmailIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastUpdatedFromEmailAt?: string;
+  isComplete: boolean;
+  isAtRisk: boolean;
+}
+
+// Only "delivery" ships in v1 — kept as a small lookup (icon + how to build a card title/date) so
+// adding a second category type later is additive here too, mirroring CATEGORY_TYPES on the backend.
+const CATEGORY_TYPE_META: Record<string, { label: string; icon: string; primaryDateField: string; title: (fields: CategoryItem['fields']) => string }> = {
+  delivery: {
+    label: 'Delivery',
+    icon: '📦',
+    primaryDateField: 'estimatedDelivery',
+    title: (fields) => [fields.merchant, fields.orderDescription].filter(Boolean).join(' — ') || 'Delivery',
+  },
+};
+
+function categoryTypeMeta(categoryType: string) {
+  return CATEGORY_TYPE_META[categoryType] ?? { label: categoryType, icon: '🏷️', primaryDateField: '', title: () => categoryType };
+}
+
+function CategoryItemStatusBadge({ item }: { item: CategoryItem }) {
+  if (item.isComplete) return <span className="status-badge status-done">✅ Done</span>;
+  if (item.isAtRisk) return <span className="status-badge status-at-risk">⚠️ At risk</span>;
+  return <span className="status-badge status-in-progress">{item.fields.status || 'In progress'}</span>;
+}
+
+// Card content is currently delivery-specific (tracking number/carrier/ETA) since that's the only
+// shipped category type — generalize this once a second category type is added.
+function CategoryItemCard({ item, onClick }: { item: CategoryItem; onClick: () => void }) {
+  const meta = categoryTypeMeta(item.categoryType);
+  const primaryDate = meta.primaryDateField ? item.fields[meta.primaryDateField] : undefined;
+  return (
+    <div className="category-item-card" onClick={onClick}>
+      <div className="category-item-card-header">
+        <span className="category-item-card-title">{meta.icon} {meta.title(item.fields)}</span>
+        <CategoryItemStatusBadge item={item} />
+      </div>
+      {item.fields.trackingNumber && (
+        <p className="category-item-card-line">📦 {item.fields.trackingNumber}{item.fields.carrier ? ` (${item.fields.carrier})` : ''}</p>
+      )}
+      {primaryDate && <p className="category-item-card-line">📅 ETA: {primaryDate}</p>}
+    </div>
+  );
 }
 
 function providerLabel(provider?: Provider): string {
@@ -71,7 +140,7 @@ const THEMES: { id: ThemeId; label: string }[] = [
 function App() {
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats' | 'drafting'>('inbox'); // which tab is visible
+  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats' | 'drafting' | 'categories'>('inbox'); // which tab is visible
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -102,6 +171,22 @@ function App() {
   const [threadLoadingId, setThreadLoadingId] = useState<string | null>(null);
   const [openedEmail, setOpenedEmail] = useState<Email | null>(null); // set = showing the detail view instead of the inbox list
 
+  const [labels, setLabels] = useState<LabelDef[]>([]);
+  const [labelFilter, setLabelFilter] = useState<string>('all');
+  const [labelSaving, setLabelSaving] = useState<boolean>(false);
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
+  const [editLabelDraft, setEditLabelDraft] = useState<{ name: string; description: string; color: string }>({ name: '', description: '', color: '#6366f1' });
+  const [newLabelName, setNewLabelName] = useState<string>('');
+  const [newLabelDescription, setNewLabelDescription] = useState<string>('');
+  const [newLabelColor, setNewLabelColor] = useState<string>('#6366f1');
+
+  const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
+  const [categoryItemsLoading, setCategoryItemsLoading] = useState<boolean>(false);
+  const [openedCategoryItem, setOpenedCategoryItem] = useState<CategoryItem | null>(null);
+  const [categoryItemEmails, setCategoryItemEmails] = useState<Email[]>([]);
+  const [categoryItemLoading, setCategoryItemLoading] = useState<boolean>(false);
+  const [returnToCategoryItemId, setReturnToCategoryItemId] = useState<string | null>(null);
+
   useEffect(() => {
     localStorage.setItem('mailyTheme', theme);
   }, [theme]);
@@ -126,9 +211,36 @@ function App() {
     }
   };
 
-  // Load connected email accounts (Gmail + Outlook) on page load
+  // Fetches this user's full label catalog (app presets + their own custom labels).
+  const loadLabels = async () => {
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) return;
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/labels`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setLabels(data.labels || []);
+    } catch {
+      // silently fail
+    }
+  };
+
+  // Load connected email accounts (Gmail + Outlook) and the label catalog on page load. Also trigger
+  // a sync so the inbox reflects the latest mail as soon as the user opens/refreshes the app, rather
+  // than just showing whatever was last synced — the loadEmails effect below shows the cached DB state
+  // immediately, and this overwrites it once the sync's actual provider round-trip completes.
+  // hasMountedRef guards against React StrictMode's dev-only double-invoke of mount effects, which
+  // would otherwise fire two real /sync calls (double provider hits, double AI classify) on every load.
+  const hasMountedRef = useRef(false);
   useEffect(() => {
+    if (hasMountedRef.current) return;
+    hasMountedRef.current = true;
     loadConnectedAccounts();
+    loadLabels();
+    fetchFromBackend();
   }, []);
 
   // Handle the redirect back from Microsoft after the user approves (or cancels) Outlook access.
@@ -175,6 +287,7 @@ function App() {
         const data = await response.json();
         await loadConnectedAccounts(); // refetch fresh rather than trust local state, per the race note above
         showToast(`Connected ${data.email ?? 'Outlook account'} successfully!`, 'success');
+        fetchFromBackend(); // pull the new account's mail in immediately rather than waiting for a manual sync
       } catch (error) {
         console.error('Error connecting Outlook account:', error);
         showToast('Error connecting to Outlook. Please try again.', 'error');
@@ -248,6 +361,7 @@ function App() {
           );
         }
         showToast(`Connected ${data.email ?? 'Google account'} successfully!`, 'success');
+        fetchFromBackend(); // pull the new account's mail in immediately rather than waiting for a manual sync
 
       } catch (error) {
         console.error('Error sending code to backend:', error);
@@ -500,6 +614,22 @@ function App() {
   const goBackToInbox = () => {
     setOpenedEmail(null);
     setExpandedEmailId(null);
+    // If we got here by drilling into an email from a Smart Category card, "back" should return
+    // there rather than to the plain inbox list.
+    if (returnToCategoryItemId) {
+      const itemId = returnToCategoryItemId;
+      setReturnToCategoryItemId(null);
+      setActiveTab('categories');
+      openCategoryItemDetail(itemId);
+    }
+  };
+
+  // Opens an email from within a Smart Category item's detail view, reusing the existing
+  // thread/body detail view — remembers where to return to when the user clicks "back".
+  const openEmailFromCategoryItem = (email: Email) => {
+    setReturnToCategoryItemId(openedCategoryItem?.itemId ?? null);
+    setActiveTab('inbox');
+    openEmailDetail(email);
   };
 
   // Fetch a presigned S3 download URL for an attachment and open it
@@ -548,6 +678,137 @@ function App() {
     } finally {
       setFetchLimitSaving(false);
     }
+  };
+
+  // Create a new custom label
+  const createLabel = async () => {
+    if (!newLabelName.trim() || !newLabelDescription.trim()) {
+      showToast('Name and description are required.', 'error');
+      return;
+    }
+    setLabelSaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/labels`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newLabelName.trim(), description: newLabelDescription.trim(), color: newLabelColor })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      setNewLabelName('');
+      setNewLabelDescription('');
+      setNewLabelColor('#6366f1');
+      await loadLabels();
+      showToast('Label created', 'success');
+    } catch (error) {
+      console.error('Error creating label:', error);
+      showToast('Failed to create label. Please try again.', 'error');
+    } finally {
+      setLabelSaving(false);
+    }
+  };
+
+  // Save edits to an existing custom label
+  const updateLabel = async (labelId: string, updates: { name?: string; description?: string; color?: string }) => {
+    setLabelSaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/labels`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labelId, ...updates })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      await loadLabels();
+      setEditingLabelId(null);
+      showToast('Label updated', 'success');
+    } catch (error) {
+      console.error('Error updating label:', error);
+      showToast('Failed to update label. Please try again.', 'error');
+    } finally {
+      setLabelSaving(false);
+    }
+  };
+
+  // Delete a custom label
+  const deleteLabel = async (labelId: string) => {
+    setLabelSaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/labels`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ labelId })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      if (labelFilter === labelId) setLabelFilter('all');
+      await loadLabels();
+      showToast('Label deleted', 'success');
+    } catch (error) {
+      console.error('Error deleting label:', error);
+      showToast('Failed to delete label. Please try again.', 'error');
+    } finally {
+      setLabelSaving(false);
+    }
+  };
+
+  // Fetches this user's tracked smart-category items (currently just "delivery")
+  const loadCategoryItems = async () => {
+    setCategoryItemsLoading(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/smart-categories`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      setCategoryItems(data.items || []);
+    } catch (error) {
+      console.error('Error loading smart categories:', error);
+      showToast('Failed to load smart categories. Please try again.', 'error');
+    } finally {
+      setCategoryItemsLoading(false);
+    }
+  };
+
+  // Opens the dedicated detail view for one tracked smart-category item (its full fields + every
+  // contributing email, oldest-first).
+  const openCategoryItemDetail = async (itemId: string) => {
+    setCategoryItemLoading(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const url = `${import.meta.env.VITE_API_BASE_URL}/smart-category?itemId=${encodeURIComponent(itemId)}`;
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      setOpenedCategoryItem(data.item);
+      setCategoryItemEmails(data.emails || []);
+    } catch (error) {
+      console.error('Error loading smart category item:', error);
+      showToast('Failed to load this item. Please try again.', 'error');
+    } finally {
+      setCategoryItemLoading(false);
+    }
+  };
+
+  const goBackToCategoryItems = () => {
+    setOpenedCategoryItem(null);
+    setCategoryItemEmails([]);
   };
 
   // Sync emails function
@@ -607,6 +868,7 @@ function App() {
                 📥 Inbox
               </div>
               <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>✨ Smart Drafting</div>
+              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>🚚 Smart Categories</div>
               <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>📊 Statistics</div>
               <div onClick={() => setActiveTab('settings')} className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
                 ⚙️ Settings
@@ -655,6 +917,17 @@ function App() {
                                         {msg.receivedAt ? new Date(msg.receivedAt).toLocaleString() : ''}
                                       </span>
                                     </div>
+                                    {((msg.labels && msg.labels.length > 0) || (msg.providerLabels && msg.providerLabels.length > 0)) && (
+                                      <div className="email-label-row">
+                                        {(msg.labels || []).map(labelId => {
+                                          const def = labels.find(l => l.id === labelId);
+                                          return def ? <span key={labelId} className="label-chip" style={{ background: def.color }}>{def.name}</span> : null;
+                                        })}
+                                        {(msg.providerLabels || []).map(name => (
+                                          <span key={name} className="provider-label-badge">{name}</span>
+                                        ))}
+                                      </div>
+                                    )}
                                     {!isExpanded && msg.summary && (
                                       <p className="thread-message-preview">{msg.summary}</p>
                                     )}
@@ -738,13 +1011,38 @@ function App() {
                     </div>
                   )}
 
+                  {/* Label filter tabs — only visible once at least one label exists */}
+                  {labels.length > 0 && (
+                    <div className="account-filter-bar">
+                      <button
+                        className={`filter-tab ${labelFilter === 'all' ? 'active' : ''}`}
+                        onClick={() => setLabelFilter('all')}
+                      >
+                        All Labels
+                      </button>
+                      {labels.map(l => (
+                        <button
+                          key={l.id}
+                          className={`filter-tab ${labelFilter === l.id ? 'active' : ''}`}
+                          onClick={() => setLabelFilter(l.id)}
+                        >
+                          {l.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="tab-body">
                     <div className="email-card">
                       <div className="email-card-header">
                         <h3>📬 Latest Email Analysis</h3>
                       </div>
 
-                      {loading ? (
+                      {(() => {
+                        const visibleEmails = labelFilter === 'all'
+                          ? emails
+                          : emails.filter(e => (e.labels || []).includes(labelFilter));
+                        return loading ? (
                         <div className="email-list">
                           {[1,2,3,4].map(i => (
                             <div key={i} className="skeleton-email-item">
@@ -758,9 +1056,9 @@ function App() {
                             </div>
                           ))}
                         </div>
-                      ) : emails.length > 0 ? (
+                      ) : visibleEmails.length > 0 ? (
                         <div className="email-list">
-                          {emails.map((email, index) => (
+                          {visibleEmails.map((email, index) => (
                             <div key={index} className="email-item email-item-clickable" onClick={() => openEmailDetail(email)}>
                               <div className="email-item-header">
                                 <strong className="email-subject">{email.subject}</strong>
@@ -773,6 +1071,17 @@ function App() {
                                   </span>
                                 </div>
                               </div>
+                              {((email.labels && email.labels.length > 0) || (email.providerLabels && email.providerLabels.length > 0)) && (
+                                <div className="email-label-row">
+                                  {(email.labels || []).map(labelId => {
+                                    const def = labels.find(l => l.id === labelId);
+                                    return def ? <span key={labelId} className="label-chip" style={{ background: def.color }}>{def.name}</span> : null;
+                                  })}
+                                  {(email.providerLabels || []).map(name => (
+                                    <span key={name} className="provider-label-badge">{name}</span>
+                                  ))}
+                                </div>
+                              )}
                               {email.summary && (
                                 <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>
                               )}
@@ -801,7 +1110,8 @@ function App() {
                           <div className="empty-inbox-icon">📭</div>
                           <p>No emails found in the database.<br/>Click Sync to fetch them!</p>
                         </div>
-                      )}
+                      );
+                      })()}
                     </div>
                   </div>
                 </>
@@ -894,6 +1204,115 @@ function App() {
                   )}
                 </div>
               </>
+            )}
+
+            {/* Smart Categories Tab */}
+            {activeTab === 'categories' && (
+              openedCategoryItem ? (
+                <>
+                  <header className="tab-header">
+                    <button className="btn-back" onClick={goBackToCategoryItems}>← Back to Smart Categories</button>
+                  </header>
+
+                  <div className="tab-body">
+                    {categoryItemLoading ? (
+                      <div className="email-card"><div className="skeleton skeleton-row full" /></div>
+                    ) : (
+                      <>
+                        <div className="email-card">
+                          <div className="email-card-header">
+                            <h3>{categoryTypeMeta(openedCategoryItem.categoryType).icon} {categoryTypeMeta(openedCategoryItem.categoryType).title(openedCategoryItem.fields)}</h3>
+                            <CategoryItemStatusBadge item={openedCategoryItem} />
+                          </div>
+                          <div className="category-item-fields">
+                            {Object.entries(openedCategoryItem.fields).filter(([, value]) => value).map(([key, value]) => (
+                              <div key={key} className="category-item-field">
+                                <span className="category-item-field-label">{key}</span>
+                                <span className="category-item-field-value">{value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="email-card" style={{ marginTop: '1.5rem' }}>
+                          <div className="email-card-header">
+                            <h3>📧 Related Emails</h3>
+                          </div>
+                          <div className="email-list">
+                            {categoryItemEmails.map((email, index) => (
+                              <div
+                                key={email.emailId ?? index}
+                                className="email-item email-item-clickable"
+                                onClick={() => openEmailFromCategoryItem(email)}
+                              >
+                                <div className="email-item-header">
+                                  <strong className="email-subject">{email.subject}</strong>
+                                  <span className="email-status">
+                                    {email.receivedAt ? new Date(email.receivedAt).toLocaleString() : ''}
+                                  </span>
+                                </div>
+                                {email.summary && <p className="email-summary">{email.summary}</p>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <header className="tab-header">
+                    <h1>Smart Categories</h1>
+                    <button onClick={loadCategoryItems} disabled={categoryItemsLoading} className="btn-sync">
+                      {categoryItemsLoading ? 'Loading...' : '🔄 Refresh'}
+                    </button>
+                  </header>
+
+                  <div className="tab-body">
+                    {categoryItemsLoading ? (
+                      <div className="category-item-grid">
+                        {[1, 2, 3].map(i => (
+                          <div key={i} className="skeleton-email-item">
+                            <div className="skeleton skeleton-row medium" />
+                            <div className="skeleton skeleton-row full" />
+                          </div>
+                        ))}
+                      </div>
+                    ) : categoryItems.length > 0 ? (() => {
+                      const active = [...categoryItems.filter(i => !i.isComplete)].sort((a, b) => {
+                        const field = categoryTypeMeta(a.categoryType).primaryDateField;
+                        return (a.fields[field] || '').localeCompare(b.fields[field] || '');
+                      });
+                      const done = categoryItems.filter(i => i.isComplete);
+                      return (
+                        <>
+                          <div className="category-item-grid">
+                            {active.map(item => (
+                              <CategoryItemCard key={item.itemId} item={item} onClick={() => openCategoryItemDetail(item.itemId)} />
+                            ))}
+                          </div>
+                          {done.length > 0 && (
+                            <details className="category-completed-section">
+                              <summary>Completed ({done.length})</summary>
+                              <div className="category-item-grid">
+                                {done.map(item => (
+                                  <CategoryItemCard key={item.itemId} item={item} onClick={() => openCategoryItemDetail(item.itemId)} />
+                                ))}
+                              </div>
+                            </details>
+                          )}
+                        </>
+                      );
+                    })() : (
+                      <div className="empty-inbox">
+                        <div className="empty-inbox-icon">🚚</div>
+                        <p>No tracked deliveries yet.<br/>They'll show up here automatically once Maily detects one in your synced mail.</p>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )
             )}
 
             {/* Statistics Tab */}
@@ -1063,6 +1482,96 @@ function App() {
                         style={{ marginLeft: 'auto' }}
                       >
                         {fetchLimitSaving ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Manage labels */}
+                  <div className="settings-card" style={{ marginBottom: '20px' }}>
+                    <h3>🏷️ Manage Labels</h3>
+                    <p>
+                      Labels are assigned automatically by AI based on each label's description. Presets are built into Maily; you can also create your own.
+                    </p>
+
+                    {labels.map(label => (
+                      <div key={label.id} className="label-manage-row">
+                        {editingLabelId === label.id ? (
+                          <>
+                            <input
+                              type="color"
+                              value={editLabelDraft.color}
+                              onChange={e => setEditLabelDraft(prev => ({ ...prev, color: e.target.value }))}
+                              className="label-color-input"
+                            />
+                            <input
+                              type="text"
+                              value={editLabelDraft.name}
+                              onChange={e => setEditLabelDraft(prev => ({ ...prev, name: e.target.value }))}
+                              className="label-text-input"
+                              placeholder="Name"
+                            />
+                            <input
+                              type="text"
+                              value={editLabelDraft.description}
+                              onChange={e => setEditLabelDraft(prev => ({ ...prev, description: e.target.value }))}
+                              className="label-text-input label-description-input"
+                              placeholder="Description (used by the AI to classify emails)"
+                            />
+                            <button
+                              className="btn-sync"
+                              disabled={labelSaving}
+                              onClick={() => updateLabel(label.id, editLabelDraft)}
+                            >
+                              Save
+                            </button>
+                            <button className="btn-disconnect" onClick={() => setEditingLabelId(null)}>Cancel</button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="label-chip" style={{ background: label.color }}>{label.name}</span>
+                            <span className="label-manage-description">{label.description}</span>
+                            {isCustomLabel(label) ? (
+                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button
+                                  className="btn-disconnect"
+                                  onClick={() => { setEditingLabelId(label.id); setEditLabelDraft({ name: label.name, description: label.description, color: label.color }); }}
+                                >
+                                  Edit
+                                </button>
+                                <button className="btn-disconnect" disabled={labelSaving} onClick={() => deleteLabel(label.id)}>Delete</button>
+                              </div>
+                            ) : (
+                              <span className="label-preset-tag">Preset</span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Create a new custom label */}
+                    <div className="label-create-row">
+                      <input
+                        type="color"
+                        value={newLabelColor}
+                        onChange={e => setNewLabelColor(e.target.value)}
+                        className="label-color-input"
+                      />
+                      <input
+                        type="text"
+                        value={newLabelName}
+                        onChange={e => setNewLabelName(e.target.value)}
+                        className="label-text-input"
+                        placeholder="Label name"
+                      />
+                      <input
+                        type="text"
+                        value={newLabelDescription}
+                        onChange={e => setNewLabelDescription(e.target.value)}
+                        className="label-text-input label-description-input"
+                        placeholder="Description (used by the AI to classify emails)"
+                      />
+                      <button onClick={createLabel} disabled={labelSaving} className="btn-connect">
+                        {labelSaving ? 'Saving...' : 'Create Label'}
                       </button>
                     </div>
                   </div>

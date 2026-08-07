@@ -18,3 +18,6 @@ Infrastructure/.terraform/
 
 # Environment variable file
 .env
+
+# AWS session credentials (local only, never commit)
+aws-session.ps1

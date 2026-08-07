@@ -1,19 +1,77 @@
 import json
 import os
 import time
+import uuid
 import base64
 import urllib.parse
 import boto3
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from botocore.exceptions import ClientError
 
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Maily-Emails')
+labels_table = dynamodb.Table('Maily-Labels')
+category_items_table = dynamodb.Table('Maily-CategoryItems')
 
 _secrets_cache = None
+
+PRESET_LABELS = [
+    {"id": "work",        "name": "Work",        "description": "Emails related to the user's job, colleagues, meetings, work projects, or professional communication.", "color": "#6366f1"},
+    {"id": "finance",     "name": "Finance",     "description": "Emails about banking, bills, invoices, payments, statements, or financial accounts.", "color": "#10b981"},
+    {"id": "shopping",    "name": "Shopping",    "description": "Emails about online purchases, order confirmations, or promotions from retailers. An email can be both Shopping and, separately, tracked as a Delivery if it also has shipment/tracking/order-status content.", "color": "#f59e0b"},
+    {"id": "travel",      "name": "Travel",      "description": "Emails about flight, hotel, or rental bookings, itineraries, or travel confirmations.", "color": "#0ea5e9"},
+    {"id": "social",      "name": "Social",      "description": "Emails from social networks, event invitations, or personal correspondence with friends/family.", "color": "#f43f5e"},
+    {"id": "newsletters", "name": "Newsletters", "description": "Recurring newsletters, digests, or subscription content the user opted into.", "color": "#a855f7"},
+    {"id": "urgent",      "name": "Urgent",      "description": "Emails that require prompt action or a response, such as deadlines, alerts, or time-sensitive requests.", "color": "#ef4444"},
+    {"id": "receipts",    "name": "Receipts",    "description": "Order receipts, payment confirmations, or proof-of-purchase emails.", "color": "#64748b"},
+]
+
+# Every category type declares its structured fields, a matching key for deduplication, and generic
+# rules (completionRule/atRiskRule) that drive the "done" / "at risk" badges without any per-category
+# UI or engine code — adding a new category type later is purely additive to this dict.
+CATEGORY_TYPES = {
+    "delivery": {
+        "label": "Delivery",
+        "icon": "\U0001F4E6",
+        "classifierDescription": (
+            "emails about a package/order shipment: purchase or shipping confirmations, tracking/carrier "
+            "updates, out-for-delivery or delivered notices, delay or delivery-exception notices, and also "
+            "'your order will be auto-completed/closed soon' or 'please confirm you received your order' / "
+            "'apply for a return or refund' notices — these last ones imply the package has likely already "
+            "arrived and should still be treated as a delivery update"
+        ),
+        "fields": [
+            {"key": "orderNumber",       "label": "Order Number",       "type": "string",
+             "hint": "The merchant's order/confirmation number referenced across this order's emails (e.g. "
+                     "'Order 1121596074575068'). Distinct from a carrier tracking number, but it's often the "
+                     "only identifier present in every email about this order (including early/late-lifecycle "
+                     "emails that don't mention a tracking number) — extract it whenever present."},
+            {"key": "trackingNumber",    "label": "Tracking Number",    "type": "string"},
+            {"key": "carrier",           "label": "Carrier",            "type": "string"},
+            {"key": "status",            "label": "Status",             "type": "enum",
+             "values": ["ordered", "shipped", "out_for_delivery", "delivered", "delayed", "exception"],
+             "hint": "If the email says the order will be auto-completed/closed soon, asks you to confirm "
+                     "receipt, or invites you to apply for a return/refund if the package is missing or wrong, "
+                     "treat that as status=delivered — the package has very likely already arrived."},
+            {"key": "estimatedDelivery", "label": "Estimated Delivery", "type": "date"},
+            {"key": "actualDelivery",    "label": "Actual Delivery",    "type": "date"},
+            {"key": "merchant",          "label": "Merchant",           "type": "string"},
+            {"key": "orderDescription",  "label": "Order Description",  "type": "string"},
+        ],
+        # orderNumber checked first: it's the identifier most likely to be present across an order's whole
+        # lifecycle, whereas trackingNumber may be absent from early ("ordered") and late ("awaiting your
+        # confirmation") emails that don't mention a carrier at all.
+        "matchKeys": ["orderNumber", "trackingNumber"],
+        "titleTemplate": "{merchant} — {orderDescription}",
+        "primaryDateField": "estimatedDelivery",
+        "completionRule": {"type": "field_equals", "field": "status", "values": ["delivered"]},
+        "atRiskRule": {"type": "date_passed_without", "dateField": "estimatedDelivery",
+                       "field": "status", "values": ["delivered"]},
+    },
+}
 
 class DecimalEncoder(json.JSONEncoder):
     """boto3's DynamoDB resource API always returns numeric attributes as Decimal, which json.dumps
@@ -166,6 +224,87 @@ def put_email_item(item):
     persisted = {k: v for k, v in item.items() if k not in ('bodyText', 'bodyHtml')}
     table.put_item(Item=persisted)
 
+def get_label_catalog(user_id):
+    """This user's full label set: app-wide presets plus their own custom labels."""
+    custom = labels_table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+    ).get('Items', [])
+    return PRESET_LABELS + [
+        {"id": c['labelId'], "name": c.get('name', ''), "description": c.get('description', ''), "color": c.get('color', '#94a3b8')}
+        for c in custom
+    ]
+
+# Structural/system Gmail labels that don't belong in a "labels applied to this email" badge list —
+# UNREAD/status is already tracked separately via the `status` field.
+_GMAIL_STRUCTURAL_LABELS = {'INBOX', 'UNREAD', 'SENT', 'DRAFT', 'TRASH', 'SPAM', 'CHAT'}
+
+def get_gmail_label_names(user_id, account):
+    """Resolves opaque Gmail Label_xxx ids to their human-readable names. One call per account per
+    sync, only made lazily (see derive_gmail_provider_labels) since most emails only carry system labels."""
+    data = api_get(user_id, account, 'https://gmail.googleapis.com/gmail/v1/users/me/labels')
+    return {l['id']: l['name'] for l in data.get('labels', [])}
+
+def derive_gmail_provider_labels(label_ids, user_id, account, label_name_cache):
+    """Turns a Gmail message's raw labelIds into human-readable provider label badges."""
+    result = []
+    needs_resolution = False
+    for label_id in label_ids:
+        if label_id in _GMAIL_STRUCTURAL_LABELS:
+            continue
+        if label_id in ('IMPORTANT', 'STARRED'):
+            result.append(label_id.title())
+        elif label_id.startswith('CATEGORY_'):
+            result.append(label_id[len('CATEGORY_'):].replace('_', ' ').title())
+        else:
+            needs_resolution = True
+
+    if needs_resolution:
+        if label_name_cache.get('map') is None:
+            label_name_cache['map'] = get_gmail_label_names(user_id, account)
+        for label_id in label_ids:
+            if label_id in _GMAIL_STRUCTURAL_LABELS or label_id in ('IMPORTANT', 'STARRED') or label_id.startswith('CATEGORY_'):
+                continue
+            name = label_name_cache['map'].get(label_id)
+            if name:
+                result.append(name)
+
+    return result
+
+def _rule_field_equals(fields, rule):
+    return fields.get(rule['field']) in rule['values']
+
+def _rule_date_passed_without(fields, rule):
+    """True when dateField is in the past and `field` hasn't reached one of `values` yet."""
+    date_str = fields.get(rule['dateField'])
+    if not date_str:
+        return False
+    if fields.get(rule['field']) in rule['values']:
+        return False
+    try:
+        target = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    return target < datetime.now(timezone.utc)
+
+def evaluate_category_rule(rule, fields):
+    if not rule:
+        return False
+    if rule['type'] == 'field_equals':
+        return _rule_field_equals(fields, rule)
+    if rule['type'] == 'date_passed_without':
+        return _rule_date_passed_without(fields, rule)
+    return False
+
+def evaluate_category_item_state(category_type, fields):
+    """Returns (isComplete, isAtRisk) for a tracked category item, driven entirely by that
+    category type's completionRule/atRiskRule — no per-category-type logic needed here."""
+    schema = CATEGORY_TYPES.get(category_type, {})
+    is_complete = evaluate_category_rule(schema.get('completionRule'), fields)
+    is_at_risk = (not is_complete) and evaluate_category_rule(schema.get('atRiskRule'), fields)
+    return is_complete, is_at_risk
+
 def gmail_internal_date_to_iso(internal_date_ms):
     """Gmail's internalDate is milliseconds-since-epoch as a string."""
     if not internal_date_ms:
@@ -213,15 +352,18 @@ def summarize_email(subject, snippet):
 
 _SUMMARY_BATCH_SIZE = 20  # keeps each OpenAI prompt/response a reasonable size and limits blast radius of one failed call
 
-def summarize_emails_batch(items):
-    """Summarizes multiple emails (each {'subject':, 'snippet':}) in as few OpenAI calls as possible,
-    chunked into groups of _SUMMARY_BATCH_SIZE. Returns summaries in the same order as items."""
-    summaries = []
+def classify_emails_batch(items, label_catalog):
+    """Summarizes + assigns labels + flags a smart-category type for multiple emails (each
+    {'subject':, 'snippet':}) in as few OpenAI calls as possible, chunked into groups of
+    _SUMMARY_BATCH_SIZE. Returns a list of {'summary','labels','smartCategory'} in the same order as items.
+    Combined into one call (rather than a separate call per concern) since the dominant cost is the
+    email content itself, already being sent for summarization."""
+    results = []
     for i in range(0, len(items), _SUMMARY_BATCH_SIZE):
-        summaries.extend(_summarize_batch_chunk(items[i:i + _SUMMARY_BATCH_SIZE]))
-    return summaries
+        results.extend(_classify_batch_chunk(items[i:i + _SUMMARY_BATCH_SIZE], label_catalog))
+    return results
 
-def _summarize_batch_chunk(items):
+def _classify_batch_chunk(items, label_catalog):
     if not items:
         return []
 
@@ -231,17 +373,27 @@ def _summarize_batch_chunk(items):
         f"Email {i + 1}:\nSubject: {item['subject']}\nContent: {item['snippet']}"
         for i, item in enumerate(items)
     )
+    label_lines = "\n".join(f"- {l['id']}: {l['description']}" for l in label_catalog)
+    category_lines = "\n".join(f"- {key}: {schema['classifierDescription']}" for key, schema in CATEGORY_TYPES.items())
+
     prompt = (
-        f"Summarize each of the following {len(items)} emails in 1-2 sentences each.\n\n"
+        f"You are classifying and summarizing a batch of {len(items)} emails.\n\n"
+        f"Available labels (assign zero or more that clearly apply):\n{label_lines}\n\n"
+        f"Available smart categories (assign at most one that clearly applies, or null if none do):\n{category_lines}\n\n"
+        f"Labels and the smart category are independent judgments, not alternatives to each other — an "
+        f"email can both get a label AND be assigned a smart category (e.g. a purchase-related email can "
+        f"be labeled 'Shopping' while also being a 'delivery' smart category update). Decide each "
+        f"separately; do not treat assigning one as a reason to skip the other.\n\n"
         f"{numbered_emails}\n\n"
-        f'Respond with a JSON object of the form {{"summaries": ["summary for email 1", "summary for email 2", ...]}}. '
-        f"Return exactly {len(items)} summaries, in the same order as the emails above."
+        f'Respond with a JSON object of the form {{"results": [{{"summary": "1-2 sentence summary", '
+        f'"labels": ["label_id", ...], "smartCategory": "category_key_or_null"}}, ...]}}. '
+        f"Return exactly {len(items)} results, in the same order as the emails above."
     )
 
     body = json.dumps({
         "model": "gpt-4.1-nano",
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": min(120 * len(items), 4096),
+        "max_tokens": min(180 * len(items), 4096),
         "response_format": {"type": "json_object"}
     }).encode('utf-8')
 
@@ -258,14 +410,148 @@ def _summarize_batch_chunk(items):
 
     raw_content = result['choices'][0]['message']['content'].strip()
     try:
-        summaries = json.loads(raw_content).get('summaries', [])
+        results = json.loads(raw_content).get('results', [])
     except (json.JSONDecodeError, AttributeError):
-        summaries = []
+        results = []
 
-    # Defensive: the model isn't guaranteed to return exactly len(items) entries
-    while len(summaries) < len(items):
-        summaries.append('(Summary unavailable)')
-    return summaries[:len(items)]
+    valid_label_ids = {l['id'] for l in label_catalog}
+
+    # Defensive: the model isn't guaranteed to return exactly len(items) well-formed entries
+    while len(results) < len(items):
+        results.append({})
+    results = results[:len(items)]
+
+    normalized = []
+    for r in results:
+        if not isinstance(r, dict):
+            r = {}
+        summary = r.get('summary') or '(Summary unavailable)'
+        labels = [l for l in (r.get('labels') or []) if l in valid_label_ids]
+        smart_category = r.get('smartCategory')
+        if smart_category not in CATEGORY_TYPES:
+            smart_category = None
+        normalized.append({'summary': summary, 'labels': labels, 'smartCategory': smart_category})
+    return normalized
+
+_EXTRACTION_BATCH_SIZE = 20
+
+def extract_category_fields_batch(items, category_type):
+    """Extracts a smart category's structured fields (e.g. tracking number, carrier, status for
+    "delivery") from each email, chunked the same way as classify_emails_batch. Only ever called on
+    the subset of a sync batch already flagged with this category_type — not every email."""
+    results = []
+    for i in range(0, len(items), _EXTRACTION_BATCH_SIZE):
+        results.extend(_extract_category_fields_chunk(items[i:i + _EXTRACTION_BATCH_SIZE], category_type))
+    return results
+
+def _extract_category_fields_chunk(items, category_type):
+    if not items:
+        return []
+
+    schema = CATEGORY_TYPES[category_type]
+    fields = schema['fields']
+    field_keys = [f['key'] for f in fields]
+    api_key = get_secrets()['OPENAI_API_KEY']
+
+    field_desc = ", ".join(
+        f"{f['key']} ({f['type']}" + (f", one of: {', '.join(f['values'])}" if f['type'] == 'enum' else '') + ")"
+        + (f" [{f['hint']}]" if f.get('hint') else '')
+        for f in fields
+    )
+    numbered_emails = "\n\n".join(
+        f"Email {i + 1}:\nSubject: {item['subject']}\nContent: {item['snippet']}"
+        for i, item in enumerate(items)
+    )
+    example_obj = "{" + ", ".join(f'"{k}": "..."' for k in field_keys) + "}"
+    prompt = (
+        f"Extract these fields from each of the following {len(items)} emails about a {schema['label'].lower()}: "
+        f"{field_desc}. Use null for anything not present in the email.\n\n"
+        f"{numbered_emails}\n\n"
+        f'Respond with a JSON object of the form {{"results": [{example_obj}, ...]}}. '
+        f"Return exactly {len(items)} results, in the same order as the emails above."
+    )
+
+    body = json.dumps({
+        "model": "gpt-4.1-nano",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": min(150 * len(items), 4096),
+        "response_format": {"type": "json_object"}
+    }).encode('utf-8')
+
+    req = urllib.request.Request('https://api.openai.com/v1/chat/completions', data=body, method='POST')
+    req.add_header('Authorization', f'Bearer {api_key}')
+    req.add_header('Content-Type', 'application/json')
+
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    raw_content = result['choices'][0]['message']['content'].strip()
+    try:
+        results = json.loads(raw_content).get('results', [])
+    except (json.JSONDecodeError, AttributeError):
+        results = []
+
+    while len(results) < len(items):
+        results.append({})
+    results = results[:len(items)]
+
+    # Drop hallucinated/invalid enum values (e.g. a status the model invented outside the allowed set)
+    # rather than storing garbage that can never satisfy a category type's completionRule/atRiskRule.
+    enum_allowed = {f['key']: set(f['values']) for f in fields if f.get('type') == 'enum'}
+    normalized = []
+    for r in results:
+        row = {}
+        if isinstance(r, dict):
+            for k in field_keys:
+                v = r.get(k)
+                if not v:
+                    continue
+                if k in enum_allowed and v not in enum_allowed[k]:
+                    continue
+                row[k] = v
+        normalized.append(row)
+    return normalized
+
+def ai_match_category_item(extracted, summary, existing_items, category_type):
+    """Small, non-batched fallback match call — only used when deterministic matchKeys don't apply
+    (e.g. an order-confirmation email with no tracking number yet), and only when the user has at
+    least one existing open item of this category type. Returns the matched item dict, or None."""
+    schema = CATEGORY_TYPES[category_type]
+    api_key = get_secrets()['OPENAI_API_KEY']
+
+    candidate_lines = "\n".join(
+        f"- {e['itemId']}: {json.dumps(e.get('fields', {}), default=str)}"
+        for e in existing_items
+    )
+    prompt = (
+        f"A new email about a {schema['label'].lower()} was just processed with this extracted data: "
+        f"{json.dumps(extracted, default=str)} (summary: {summary}).\n\n"
+        f"Here are the user's existing open {schema['label'].lower()} items:\n{candidate_lines}\n\n"
+        f"Does this new email update one of these existing items, or none of them? "
+        f'Respond with JSON: {{"matchId": "<itemId>" or null}}.'
+    )
+
+    body = json.dumps({
+        "model": "gpt-4.1-nano",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 60,
+        "response_format": {"type": "json_object"}
+    }).encode('utf-8')
+
+    req = urllib.request.Request('https://api.openai.com/v1/chat/completions', data=body, method='POST')
+    req.add_header('Authorization', f'Bearer {api_key}')
+    req.add_header('Content-Type', 'application/json')
+
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    raw_content = result['choices'][0]['message']['content'].strip()
+    try:
+        match_id = json.loads(raw_content).get('matchId')
+    except (json.JSONDecodeError, AttributeError):
+        match_id = None
+
+    return next((e for e in existing_items if e['itemId'] == match_id), None)
 
 
 def lambda_handler(event, context):
@@ -304,6 +590,18 @@ def lambda_handler(event, context):
         return handle_summarize_email(event)
     elif http_method == 'POST' and path == '/mark-read':
         return handle_mark_read(event)
+    elif http_method == 'GET' and path == '/labels':
+        return handle_list_labels(event)
+    elif http_method == 'POST' and path == '/labels':
+        return handle_create_label(event)
+    elif http_method == 'PUT' and path == '/labels':
+        return handle_update_label(event)
+    elif http_method == 'DELETE' and path == '/labels':
+        return handle_delete_label(event)
+    elif http_method == 'GET' and path == '/smart-categories':
+        return handle_list_category_items(event)
+    elif http_method == 'GET' and path == '/smart-category':
+        return handle_get_category_item(event)
     else:
         return {
             "statusCode": 404,
@@ -362,6 +660,30 @@ def handle_save_settings(event):
             "body": json.dumps({"message": "Internal server error while saving settings", "error": str(e)})
         }
 
+def get_user_emails(user_id, account_filter=None, label_filter=None):
+    """Queries every stored email for a user (one paginated Query on the userId partition key —
+    cheap regardless of item count, unlike N individual GetItems). Shared by the /hello listing and
+    the /sync response, which both need "the user's current full inbox" as opposed to just what
+    changed in a given sync."""
+    items = []
+    response = table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+    )
+    items.extend(response.get('Items', []))
+    while 'LastEvaluatedKey' in response:
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
+            ExclusiveStartKey=response['LastEvaluatedKey']
+        )
+        items.extend(response.get('Items', []))
+
+    if account_filter:
+        items = [e for e in items if e.get('providerEmail') == account_filter]
+    if label_filter:
+        items = [e for e in items if label_filter in (e.get('labels') or [])]
+
+    return items
+
 def handle_get_emails(event):
     try:
         user_id = get_authorized_user_id(event)
@@ -371,24 +693,9 @@ def handle_get_emails(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Optional filter: ?account=user@gmail.com
+        # Optional filters: ?account=user@gmail.com, ?label=work
         query_params = event.get('queryStringParameters') or {}
-        account_filter = query_params.get('account')
-
-        items = []
-        response = table.query(
-            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
-        )
-        items.extend(response.get('Items', []))
-        while 'LastEvaluatedKey' in response:
-            response = table.query(
-                KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id),
-                ExclusiveStartKey=response['LastEvaluatedKey']
-            )
-            items.extend(response.get('Items', []))
-
-        if account_filter:
-            items = [e for e in items if e.get('providerEmail') == account_filter]
+        items = get_user_emails(user_id, query_params.get('account'), query_params.get('label'))
 
         return {
             "statusCode": 200,
@@ -402,37 +709,47 @@ def handle_get_emails(event):
             "body": json.dumps({"message": "Failed to fetch data.", "error": str(e)})
         }
 
-def sync_single_gmail_account(user_id, account, fetch_limit):
-    """Fetch and store emails for one connected Gmail account.
-    Emails already present (by emailId) are known to have been processed already \u2014 summarizing is
-    the expensive step, so we skip re-fetching details and re-summarizing for anything we've already
-    stored, and only touch genuinely new messages. Existing rows (including their status) are left
-    exactly as-is; status is user-driven going forward, not re-derived from the provider on every sync."""
+def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
+    """Fetch and store new emails for one connected Gmail account.
+    Instead of checking every fetched message against DynamoDB, we keep a per-account watermark
+    (last_synced_message_id/last_synced_at, mutated in place on `account` \u2014 sync_user_emails persists
+    it) and ask Gmail only for messages after it. The result is already newest-first, so we just walk
+    it until we hit the watermark id and stop; everything above that point is new. Existing rows are
+    never re-touched \u2014 status is user-driven going forward, not re-derived from the provider."""
     provider_email = account['email']
+    last_synced_at = account.get('last_synced_at')
+    last_synced_message_id = account.get('last_synced_message_id')
 
-    list_data = api_get(
-        user_id, account,
-        f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}'
-    )
+    list_url = f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}'
+    if last_synced_at:
+        # Gmail's after: operator is only documented to guarantee day-level precision, so buffer back
+        # a full day to make sure the watermark message is still included in the results \u2014 the actual
+        # cutoff is enforced below by matching last_synced_message_id, not by this filter.
+        buffered_ts = int(datetime.fromisoformat(last_synced_at).timestamp()) - 86400
+        list_url += f'&q=after:{buffered_ts}'
+
+    list_data = api_get(user_id, account, list_url)
     messages = list_data.get('messages', [])
 
     if not messages:
         return [], 0
 
-    already_synced = []
     new_message_ids = []
     for msg in messages:
-        email_id = f"gmail#{provider_email}#{msg['id']}"  # provider-prefixed, keeps emailId unique across accounts/providers
-        existing = table.get_item(Key={'userId': user_id, 'emailId': email_id}).get('Item')
-        if existing:
-            already_synced.append(existing)
-        else:
-            new_message_ids.append((msg['id'], email_id))
+        if msg['id'] == last_synced_message_id:
+            break
+        new_message_ids.append(msg['id'])
+
+    if not new_message_ids:
+        return [], 0
 
     # format=full so we can pull attachment metadata from payload.parts.
     # The body content it returns is used only to derive attachments/snippet and then discarded \u2014 not stored.
+    label_name_cache = {'map': None}  # lazily resolved, shared across this account's messages
     pending = []
-    for raw_id, email_id in new_message_ids:
+    newest_received_at = None
+    for idx, raw_id in enumerate(new_message_ids):
+        email_id = f"gmail#{provider_email}#{raw_id}"  # provider-prefixed, keeps emailId unique across accounts/providers
         email_data = api_get(
             user_id, account,
             f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{raw_id}?format=full'
@@ -443,10 +760,14 @@ def sync_single_gmail_account(user_id, account, fetch_limit):
         subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
         sender  = next((h['value'] for h in headers if h['name'] == 'From'), '(Unknown Sender)')
         snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
-        is_unread = 'UNREAD' in email_data.get('labelIds', [])
+        label_ids = email_data.get('labelIds', [])
+        is_unread = 'UNREAD' in label_ids
+        provider_labels = derive_gmail_provider_labels(label_ids, user_id, account, label_name_cache)
         attachments = extract_gmail_attachments(payload)
         in_reply_to = next((h['value'] for h in headers if h['name'] == 'In-Reply-To'), '')
         received_at = gmail_internal_date_to_iso(email_data.get('internalDate'))
+        if idx == 0:
+            newest_received_at = received_at  # new_message_ids[0] is always the newest \u2014 messages is newest-first
         body_text, body_html = extract_gmail_bodies(payload)  # delivered in the response only, never persisted
 
         pending.append({
@@ -458,6 +779,7 @@ def sync_single_gmail_account(user_id, account, fetch_limit):
             'status':        'unread' if is_unread else 'read',
             'provider':      'gmail',
             'providerEmail': provider_email,
+            'providerLabels': provider_labels,
             'attachments':   attachments,
             'threadId':      email_data.get('threadId', ''),
             'inReplyTo':     in_reply_to,
@@ -466,48 +788,56 @@ def sync_single_gmail_account(user_id, account, fetch_limit):
             'bodyHtml':      body_html
         })
 
-    summaries = summarize_emails_batch([{'subject': p['subject'], 'snippet': p['content']} for p in pending])
+    new_emails = finalize_batch(user_id, pending, label_catalog)
+    if new_emails:
+        account['last_synced_message_id'] = new_message_ids[0]
+        account['last_synced_at'] = newest_received_at
+    return new_emails, len(new_emails)
 
-    new_emails = []
-    for item, summary in zip(pending, summaries):
-        item['summary'] = summary
-        put_email_item(item)
-        new_emails.append(item)
-
-    return already_synced + new_emails, len(new_emails)
-
-def sync_single_outlook_account(user_id, account, fetch_limit):
-    """Fetch and store emails for one connected Outlook account via Microsoft Graph.
-    Same skip-if-known + batch-summarize approach as the Gmail path — see its docstring."""
+def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
+    """Fetch and store new emails for one connected Outlook account via Microsoft Graph.
+    Same watermark approach as the Gmail path — see its docstring. Graph's receivedDateTime filter is
+    reliably second-precise (unlike Gmail's day-level after:), but we still buffer it and confirm the
+    cutoff by matching last_synced_message_id, for the same clock-skew/edge-case safety margin."""
     provider_email = account['email']
+    last_synced_at = account.get('last_synced_at')
+    last_synced_message_id = account.get('last_synced_message_id')
 
-    list_data = api_get(
-        user_id, account,
+    list_url = (
         f'https://graph.microsoft.com/v1.0/me/messages?$top={fetch_limit}'
-        f'&$select=subject,from,bodyPreview,isRead,conversationId,receivedDateTime,hasAttachments,internetMessageHeaders,body'
+        f'&$orderby=receivedDateTime%20desc'
+        f'&$select=subject,from,bodyPreview,isRead,conversationId,receivedDateTime,hasAttachments,internetMessageHeaders,body,categories'
     )
+    if last_synced_at:
+        # urllib.request rejects literal spaces in URLs ("URL can't contain control characters"),
+        # so the OData filter's spaces have to be percent-encoded rather than written literally.
+        buffered = (datetime.fromisoformat(last_synced_at) - timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        list_url += f'&$filter=receivedDateTime%20ge%20{buffered}'
+
+    list_data = api_get(user_id, account, list_url)
     messages = list_data.get('value', [])
 
     if not messages:
         return [], 0
 
-    already_synced = []
     new_messages = []
     for msg in messages:
-        email_id = f"outlook#{provider_email}#{msg['id']}"
-        existing = table.get_item(Key={'userId': user_id, 'emailId': email_id}).get('Item')
-        if existing:
-            already_synced.append(existing)
-        else:
-            new_messages.append((msg, email_id))
+        if msg['id'] == last_synced_message_id:
+            break
+        new_messages.append(msg)
+
+    if not new_messages:
+        return [], 0
 
     pending = []
-    for msg, email_id in new_messages:
+    for msg in new_messages:
+        email_id = f"outlook#{provider_email}#{msg['id']}"
         subject = msg.get('subject') or '(No Subject)'
         from_address = msg.get('from', {}).get('emailAddress', {})
         sender = from_address.get('name') or from_address.get('address') or '(Unknown Sender)'
         snippet = (msg.get('bodyPreview') or '').strip()
         is_unread = not msg.get('isRead', True)
+        provider_labels = msg.get('categories') or []  # Graph returns ready-to-use category strings
 
         attachments = fetch_outlook_attachment_metadata(user_id, account, msg['id']) if msg.get('hasAttachments') else []
 
@@ -530,6 +860,7 @@ def sync_single_outlook_account(user_id, account, fetch_limit):
             'status':        'unread' if is_unread else 'read',
             'provider':      'outlook',
             'providerEmail': provider_email,
+            'providerLabels': provider_labels,
             'attachments':   attachments,
             'threadId':      msg.get('conversationId', ''),
             'inReplyTo':     in_reply_to,
@@ -538,40 +869,160 @@ def sync_single_outlook_account(user_id, account, fetch_limit):
             'bodyHtml':      body_html
         })
 
-    summaries = summarize_emails_batch([{'subject': p['subject'], 'snippet': p['content']} for p in pending])
+    new_emails = finalize_batch(user_id, pending, label_catalog)
+    if new_emails:
+        account['last_synced_message_id'] = new_messages[0]['id']
+        account['last_synced_at'] = new_messages[0].get('receivedDateTime') or account.get('last_synced_at')
+    return new_emails, len(new_emails)
+
+def finalize_batch(user_id, pending, label_catalog):
+    """Shared tail for both Gmail and Outlook sync: classifies each new email (summary + Maily labels
+    + smart-category flag) in one combined batched call, persists it, then runs whatever got flagged
+    for a smart category through extraction + matching/merging (see process_smart_category_candidates)."""
+    if not pending:
+        return []
+
+    classifications = classify_emails_batch(
+        [{'subject': p['subject'], 'snippet': p['content']} for p in pending], label_catalog
+    )
 
     new_emails = []
-    for item, summary in zip(pending, summaries):
-        item['summary'] = summary
+    candidates = []
+    for item, result in zip(pending, classifications):
+        item['summary'] = result['summary']
+        item['labels'] = result['labels']
         put_email_item(item)
         new_emails.append(item)
+        # Logged so a "why didn't this email get linked to a card" question can be answered from
+        # CloudWatch alone: this is the only record of whether the classifier even considered it
+        # a smart-category candidate in the first place.
+        print(f"classify emailId={item['emailId']} subject={item['subject']!r} labels={result['labels']} smartCategory={result['smartCategory']}")
+        if result['smartCategory']:
+            candidates.append((item, result['smartCategory']))
 
-    return already_synced + new_emails, len(new_emails)
+    if candidates:
+        process_smart_category_candidates(user_id, candidates)
 
-def sync_single_account(user_id, account, fetch_limit):
+    return new_emails
+
+def sync_single_account(user_id, account, fetch_limit, label_catalog):
     """Fetch and store emails for one connected email account, dispatching by provider."""
     if account.get('provider') == 'outlook':
-        return sync_single_outlook_account(user_id, account, fetch_limit)
-    return sync_single_gmail_account(user_id, account, fetch_limit)
+        return sync_single_outlook_account(user_id, account, fetch_limit, label_catalog)
+    return sync_single_gmail_account(user_id, account, fetch_limit, label_catalog)
 
 
 def sync_user_emails(user_id, user_record):
     """Syncs all connected email accounts (Gmail + Outlook) for a user. Used by both /sync and EventBridge.
-    Returns (all_emails, new_count) — all_emails is everything currently in the fetch window (previously
-    synced + newly synced), new_count is how many of those were newly processed this run."""
+    Returns new_count — how many emails were newly processed this run. Each provider sync mutates its
+    account dict's last_synced_message_id/last_synced_at watermark in place; if anything advanced, we
+    persist the whole email_accounts list back in a single write rather than one write per account."""
     accounts = user_record.get('email_accounts', [])
     fetch_limit = int(user_record.get('email_fetch_limit', 10))
+    label_catalog = get_label_catalog(user_id)  # computed once per user, reused across all their accounts
 
-    all_emails = []
     new_count = 0
+    watermark_advanced = False
     for account in accounts:
         if not account.get('access_token'):
             continue
-        emails, count = sync_single_account(user_id, account, fetch_limit)
-        all_emails.extend(emails)
+        before = (account.get('last_synced_message_id'), account.get('last_synced_at'))
+        _, count = sync_single_account(user_id, account, fetch_limit, label_catalog)
         new_count += count
+        if (account.get('last_synced_message_id'), account.get('last_synced_at')) != before:
+            watermark_advanced = True
 
-    return all_emails, new_count
+    if watermark_advanced:
+        dynamodb.Table('Maily-Users').update_item(
+            Key={'userId': user_id},
+            UpdateExpression='SET email_accounts = :accounts',
+            ExpressionAttributeValues={':accounts': accounts}
+        )
+
+    return new_count
+
+def process_smart_category_candidates(user_id, candidates):
+    """Extracts structured fields for each smart-category-flagged email and merges it into a tracked
+    Maily-CategoryItems row (creating one if nothing existing matches). Grouped by category type,
+    processed oldest-email-first so e.g. an "order confirmed" email creates the item before a later
+    "shipped" email tries to merge into it. See CATEGORY_TYPES for the per-category schema/matchKeys."""
+    by_type = {}
+    for item, category_type in candidates:
+        by_type.setdefault(category_type, []).append(item)
+
+    for category_type, items in by_type.items():
+        items.sort(key=lambda i: i.get('receivedAt', ''))
+
+        extracted_list = extract_category_fields_batch(
+            [{'subject': i['subject'], 'snippet': i['content']} for i in items], category_type
+        )
+
+        existing_items = category_items_table.query(
+            IndexName='categoryType-index',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id) &
+                                    boto3.dynamodb.conditions.Key('categoryType').eq(category_type)
+        ).get('Items', [])
+
+        match_keys = CATEGORY_TYPES[category_type]['matchKeys']
+
+        for item, extracted in zip(items, extracted_list):
+            matched = _find_deterministic_match(existing_items, extracted, match_keys)
+            match_method = 'deterministic' if matched else None
+            if not matched and existing_items:
+                matched = ai_match_category_item(extracted, item.get('summary', ''), existing_items, category_type)
+                match_method = 'ai' if matched else 'ai-no-match'
+
+            print(f"category-match emailId={item['emailId']} extracted={extracted} "
+                  f"result={('existing:' + matched['itemId']) if matched else 'new-item'} via={match_method or 'no-existing-items'}")
+
+            now = datetime.now(timezone.utc).isoformat()
+            received_at = item.get('receivedAt') or now
+
+            if matched:
+                _merge_into_category_item(matched, extracted, item['emailId'], received_at, now)
+                target = matched
+            else:
+                target = {
+                    'userId': user_id,
+                    'itemId': f"{category_type}#{uuid.uuid4().hex[:12]}",
+                    'categoryType': category_type,
+                    'fields': {k: v for k, v in extracted.items() if v},
+                    'contributingEmailIds': [item['emailId']],
+                    'createdAt': now,
+                    'updatedAt': now,
+                    'lastUpdatedFromEmailAt': received_at,
+                }
+                existing_items.append(target)  # so later emails in this same batch can also match against it
+
+            category_items_table.put_item(Item=target)
+            table.update_item(
+                Key={'userId': user_id, 'emailId': item['emailId']},
+                UpdateExpression='SET categoryItemId = :c',
+                ExpressionAttributeValues={':c': target['itemId']}
+            )
+
+def _find_deterministic_match(existing_items, extracted, match_keys):
+    for key in match_keys:
+        value = extracted.get(key)
+        if not value:
+            continue
+        for existing in existing_items:
+            if existing.get('fields', {}).get(key) == value:
+                return existing
+    return None
+
+def _merge_into_category_item(target, extracted, email_id, received_at, now):
+    # Only let this email's values overwrite the item's fields if it's at least as recent as
+    # whatever last updated it — guards against an out-of-order email regressing e.g. delivered -> shipped.
+    if received_at >= target.get('lastUpdatedFromEmailAt', ''):
+        fields = target.setdefault('fields', {})
+        for key, value in extracted.items():
+            if value:
+                fields[key] = value
+        target['lastUpdatedFromEmailAt'] = received_at
+    if email_id not in target.get('contributingEmailIds', []):
+        target.setdefault('contributingEmailIds', []).append(email_id)
+    target['updatedAt'] = now
 
 
 def handle_scheduled_sync():
@@ -592,7 +1043,7 @@ def handle_scheduled_sync():
         if not user_id or not user.get('email_accounts'):
             continue  # skip users who haven't connected any email account
         try:
-            _, new_count = sync_user_emails(user_id, user)
+            new_count = sync_user_emails(user_id, user)
             print(f"Synced {new_count} new email(s) for user {user_id}")
             success_count += 1
         except Exception as e:
@@ -622,7 +1073,8 @@ def handle_sync_emails(event):
                 "body": json.dumps({"message": "No email accounts connected. Please connect Gmail or Outlook in Settings."})
             }
 
-        all_emails, new_count = sync_user_emails(user_id, user_record)
+        new_count = sync_user_emails(user_id, user_record)
+        all_emails = get_user_emails(user_id)
 
         if not all_emails:
             return {
@@ -904,6 +1356,183 @@ def handle_mark_read(event):
     except Exception as e:
         print(f"Error marking email as read: {str(e)}")
         return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while marking email as read", "error": str(e)})}
+
+def handle_list_labels(event):
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"labels": get_label_catalog(user_id)}, ensure_ascii=False)
+        }
+    except Exception as e:
+        print(f"Error listing labels: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing labels", "error": str(e)})}
+
+def handle_create_label(event):
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        name = (body.get('name') or '').strip()
+        description = (body.get('description') or '').strip()
+        color = body.get('color') or '#94a3b8'
+
+        if not name or not description:
+            return {"statusCode": 400, "body": json.dumps({"error": "name and description are required"})}
+
+        label_id = f"custom#{uuid.uuid4().hex[:12]}"
+        labels_table.put_item(Item={
+            'userId': user_id,
+            'labelId': label_id,
+            'name': name,
+            'description': description,
+            'color': color,
+            'createdAt': datetime.now(timezone.utc).isoformat()
+        })
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"id": label_id, "name": name, "description": description, "color": color})
+        }
+    except Exception as e:
+        print(f"Error creating label: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while creating label", "error": str(e)})}
+
+def handle_update_label(event):
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        label_id = body.get('labelId')
+        if not label_id or not label_id.startswith('custom#'):
+            return {"statusCode": 400, "body": json.dumps({"error": "labelId must refer to a custom label"})}
+
+        updates = {k: body[k] for k in ('name', 'description', 'color') if body.get(k)}
+        if not updates:
+            return {"statusCode": 400, "body": json.dumps({"error": "Nothing to update"})}
+
+        labels_table.update_item(
+            Key={'userId': user_id, 'labelId': label_id},
+            UpdateExpression='SET ' + ', '.join(f'#{k} = :{k}' for k in updates),
+            ExpressionAttributeNames={f'#{k}': k for k in updates},
+            ExpressionAttributeValues={f':{k}': v for k, v in updates.items()}
+        )
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"id": label_id, **updates})
+        }
+    except Exception as e:
+        print(f"Error updating label: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while updating label", "error": str(e)})}
+
+def handle_delete_label(event):
+    """Deletes a custom label definition. Known v1 limitation: does not retroactively strip the label
+    id from already-classified Maily-Emails rows — those simply reference a label that no longer exists."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        label_id = body.get('labelId')
+        if not label_id or not label_id.startswith('custom#'):
+            return {"statusCode": 400, "body": json.dumps({"error": "labelId must refer to a custom label"})}
+
+        labels_table.delete_item(Key={'userId': user_id, 'labelId': label_id})
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"message": "Label deleted", "id": label_id})
+        }
+    except Exception as e:
+        print(f"Error deleting label: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while deleting label", "error": str(e)})}
+
+def _serialize_category_item(item):
+    is_complete, is_at_risk = evaluate_category_item_state(item.get('categoryType'), item.get('fields', {}))
+    return {**item, 'isComplete': is_complete, 'isAtRisk': is_at_risk}
+
+def handle_list_category_items(event):
+    """Lists this user's tracked smart-category items, optionally filtered to one category type."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        query_params = event.get('queryStringParameters') or {}
+        category_type = query_params.get('type')
+
+        if category_type:
+            key_condition = boto3.dynamodb.conditions.Key('userId').eq(user_id) & \
+                             boto3.dynamodb.conditions.Key('categoryType').eq(category_type)
+            response = category_items_table.query(IndexName='categoryType-index', KeyConditionExpression=key_condition)
+        else:
+            response = category_items_table.query(KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id))
+
+        items = response.get('Items', [])
+        while 'LastEvaluatedKey' in response:
+            kwargs = {'ExclusiveStartKey': response['LastEvaluatedKey']}
+            if category_type:
+                response = category_items_table.query(IndexName='categoryType-index', KeyConditionExpression=key_condition, **kwargs)
+            else:
+                response = category_items_table.query(KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id), **kwargs)
+            items.extend(response.get('Items', []))
+
+        items = [_serialize_category_item(i) for i in items]
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"items": items}, ensure_ascii=False, cls=DecimalEncoder)
+        }
+    except Exception as e:
+        print(f"Error listing category items: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing smart categories", "error": str(e)})}
+
+def handle_get_category_item(event):
+    """Returns one tracked smart-category item plus the full email rows it was built from, so the
+    frontend's detail view is self-contained (card fields + contributing emails in one response)."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        query_params = event.get('queryStringParameters') or {}
+        item_id = query_params.get('itemId')
+        if not item_id:
+            return {"statusCode": 400, "body": json.dumps({"error": "Missing required query param: itemId"})}
+
+        item = category_items_table.get_item(Key={'userId': user_id, 'itemId': item_id}).get('Item')
+        if not item:
+            return {"statusCode": 404, "body": json.dumps({"error": "Smart category item not found"})}
+
+        emails = []
+        for email_id in item.get('contributingEmailIds', []):
+            email_item = table.get_item(Key={'userId': user_id, 'emailId': email_id}).get('Item')
+            if email_item:
+                emails.append(email_item)
+        emails.sort(key=lambda e: e.get('receivedAt', ''))
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"item": _serialize_category_item(item), "emails": emails}, ensure_ascii=False, cls=DecimalEncoder)
+        }
+    except Exception as e:
+        print(f"Error fetching category item: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching smart category item", "error": str(e)})}
 
 def handle_get_stats(event):
     try:
