@@ -174,6 +174,9 @@ function App() {
     if (stored) return stored;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'indigo';
   });
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(
+    () => window.matchMedia('(min-width: 900px)').matches
+  );
 
   // Quick light/dark toggle, layered on top of the 5-theme picker: 'midnight' is already a full dark
   // palette, so toggling just swaps to/from it and remembers whichever light theme you were on before.
@@ -881,10 +884,32 @@ function App() {
       {({ signOut, user }) => (
         <div className="app-layout" data-theme={theme}>
 
+          {/* Hamburger toggle — floats in place once the sidebar is collapsed */}
+          {!sidebarOpen && (
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="sidebar-hamburger-float"
+              aria-label="Open menu"
+              title="Open menu"
+            >
+              ☰
+            </button>
+          )}
+
           {/* Sidebar */}
-          <div className="sidebar">
+          <div className={`sidebar ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
             <div className="sidebar-header">
-              <h2 className="sidebar-logo"><img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span></h2>
+              <h2 className="sidebar-logo">
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="sidebar-hamburger"
+                  aria-label="Close menu"
+                  title="Close menu"
+                >
+                  ☰
+                </button>
+                <img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span>
+              </h2>
               <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
 
@@ -920,7 +945,7 @@ function App() {
           </div>
 
           {/* Main content */}
-          <div className="main-content">
+          <div className={`main-content ${sidebarOpen ? '' : 'main-content-expanded'}`}>
 
             {/* Dashboard Tab */}
             {activeTab === 'dashboard' && (() => {
