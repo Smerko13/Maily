@@ -870,19 +870,20 @@ function App() {
 
   //The UI / JSX
   return (
-    <Authenticator loginMechanisms={['email']} components={{
-        Header() {
-          return (
-            <div style={{ textAlign: 'center', paddingTop: '32px', paddingBottom: '8px' }}>
-              <img src="/maily-logo.png" alt="Maily" style={{ width: '72px', height: '72px', borderRadius: '18px', objectFit: 'cover', boxShadow: '0 4px 16px rgba(0,0,0,0.12)' }} />
-              <p style={{ margin: '10px 0 0', fontWeight: 700, fontSize: '1.2em', color: '#0f172a', fontFamily: 'Inter, sans-serif' }}>Maily</p>
-              <p style={{ margin: '4px 0 0', fontSize: '0.78em', color: '#64748b', fontFamily: 'Inter, sans-serif', textTransform: 'uppercase', letterSpacing: '0.8px' }}>Smart Email Assistant</p>
-            </div>
-          );
-        }
-      }}>
-      {({ signOut, user }) => (
-        <div className="app-layout" data-theme={theme}>
+    <div className="login-shell" data-theme="midnight">
+      <Authenticator loginMechanisms={['email']} components={{
+          Header() {
+            return (
+              <div className="login-header">
+                <img src="/maily-logo.png" alt="Maily" className="login-header-logo" />
+                <p className="login-header-title">Maily</p>
+                <p className="login-header-subtitle">Smart Email Assistant</p>
+              </div>
+            );
+          }
+        }}>
+        {({ signOut, user }) => (
+          <div className="app-layout" data-theme={theme}>
 
           {/* Hamburger toggle — floats in place once the sidebar is collapsed */}
           {!sidebarOpen && (
@@ -1897,8 +1898,9 @@ function App() {
             ))}
           </div>
         </div>
-      )}
-    </Authenticator>
+        )}
+      </Authenticator>
+    </div>
   );
 }
 

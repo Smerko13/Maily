@@ -1178,6 +1178,33 @@
 
 /* ── Themes ── */
 
+/* Indigo (default) — explicit self-reset so nesting under a different
+   data-theme ancestor (the login screen forces "midnight") can't leak
+   custom properties into the authenticated app. */
+[data-theme="indigo"] {
+  --accent: #6366f1;
+  --accent-light: #818cf8;
+  --accent-hover: #4f46e5;
+  --accent-rgb: 99, 102, 241;
+  --accent-glow: rgba(99, 102, 241, 0.25);
+  --bg: #f1f5f9;
+  --surface: #ffffff;
+  --surface-raised: #fafafa;
+  --surface-glass: rgba(255, 255, 255, 0.72);
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --sidebar-bg-from: #1e293b;
+  --sidebar-bg-to: #0f172a;
+  --sidebar-border: rgba(255, 255, 255, 0.07);
+  --sidebar-active: rgba(99, 102, 241, 0.18);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.07), 0 2px 6px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-glow: 0 0 0 1px rgba(var(--accent-rgb), 0.08), 0 8px 32px -8px rgba(var(--accent-rgb), 0.35);
+}
+
 /* Ocean */
 [data-theme="ocean"] {
   --accent: #0ea5e9;
@@ -1688,5 +1715,136 @@
 [data-theme="midnight"] .status-badge.status-at-risk {
   background-color: #1f0a0a;
   color: #f87171;
+}
+
+/* ── Login screen ──
+   Deliberately single-theme (forced data-theme="midnight" on the wrapper) rather than
+   following the user's stored preference: it's the first thing anyone sees, and it's the
+   flagship "modern dark cinema" surface — see [data-theme="indigo"] above for the guard
+   that stops this forced theme from leaking into the authenticated app. */
+.login-shell {
+  min-height: 100vh;
+  width: 100vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 900px 600px at 18% 12%, rgba(129, 140, 248, 0.18), transparent 60%),
+    radial-gradient(ellipse 800px 700px at 88% 88%, rgba(196, 132, 252, 0.13), transparent 60%),
+    var(--bg);
+  font-family: var(--font-body);
+}
+
+.login-header {
+  text-align: center;
+  padding: 8px 0 24px;
+}
+
+.login-header-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  box-shadow: var(--shadow-glow);
+}
+
+.login-header-title {
+  margin: 16px 0 0;
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 1.5em;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.login-header-subtitle {
+  margin: 4px 0 0;
+  font-size: 0.78em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+}
+
+/* Amplify Authenticator overrides */
+.login-shell [data-amplify-authenticator] {
+  --amplify-components-authenticator-router-background-color: transparent;
+  --amplify-components-authenticator-router-border-width: 0;
+  width: 100%;
+  max-width: 420px;
+}
+
+.login-shell [data-amplify-router] {
+  background: var(--surface) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-xl) !important;
+  box-shadow: var(--shadow-glow) !important;
+  overflow: hidden;
+}
+
+.login-shell .amplify-tabs__list {
+  background: transparent !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+
+.login-shell .amplify-tabs__item {
+  color: var(--text-muted) !important;
+  font-family: var(--font-body) !important;
+  font-weight: 600 !important;
+  border-color: transparent !important;
+  transition: color 0.2s var(--ease-spring), border-color 0.2s var(--ease-spring) !important;
+}
+
+.login-shell .amplify-tabs__item[data-state="active"],
+.login-shell .amplify-tabs__item[aria-selected="true"] {
+  color: var(--accent-light) !important;
+  border-color: var(--accent) !important;
+}
+
+.login-shell .amplify-label {
+  color: var(--text-secondary) !important;
+  font-family: var(--font-body) !important;
+  font-weight: 500 !important;
+  font-size: 0.85em !important;
+}
+
+.login-shell .amplify-input,
+.login-shell .amplify-field-group__control,
+.login-shell .amplify-select {
+  background: var(--surface-raised) !important;
+  border-color: var(--border) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.login-shell .amplify-input:focus,
+.login-shell .amplify-field-group:focus-within .amplify-field-group__control {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-glow) !important;
+}
+
+.login-shell .amplify-button--primary {
+  background: linear-gradient(135deg, var(--accent), #8b5cf6) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-body) !important;
+  font-weight: 600 !important;
+  transition: all 0.22s var(--ease-spring) !important;
+}
+
+.login-shell .amplify-button--primary:hover {
+  box-shadow: var(--shadow-glow) !important;
+  transform: translateY(-1px);
+}
+
+.login-shell .amplify-button--link,
+.login-shell a {
+  color: var(--accent-light) !important;
+}
+
+.login-shell .amplify-text,
+.login-shell .amplify-field-group__outer-end {
+  color: var(--text-secondary) !important;
 }
 
