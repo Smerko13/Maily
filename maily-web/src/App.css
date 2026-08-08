@@ -1,10 +1,18 @@
 /* ── Design Tokens ── */
 :root {
-  --accent: #6366f1;
-  --accent-light: #818cf8;
-  --accent-hover: #4f46e5;
-  --accent-rgb: 99, 102, 241;
-  --accent-glow: rgba(99, 102, 241, 0.25);
+  --accent: #0d9488;
+  --accent-light: #14b8a6;
+  --accent-hover: #0f766e;
+  --accent-rgb: 13, 148, 136;
+  --accent-glow: rgba(13, 148, 136, 0.25);
+
+  /* Reserved for CTAs and "needs attention" — the one color that means "act on this," whether
+     that's a button asking to be clicked or a badge flagging an unread email. */
+  --action: #ea580c;
+  --action-light: #fb923c;
+  --action-hover: #c2410c;
+  --action-rgb: 234, 88, 12;
+  --action-glow: rgba(234, 88, 12, 0.28);
 
   --bg: #f1f5f9;
   --surface: #ffffff;
@@ -21,7 +29,7 @@
   --sidebar-bg-from: #1e293b;
   --sidebar-bg-to: #0f172a;
   --sidebar-hover: rgba(255, 255, 255, 0.06);
-  --sidebar-active: rgba(99, 102, 241, 0.18);
+  --sidebar-active: rgba(var(--accent-rgb), 0.18);
   --sidebar-border: rgba(255, 255, 255, 0.07);
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -154,7 +162,7 @@
 }
 
 .sidebar-logo .logo-text {
-  background: linear-gradient(135deg, #a5b4fc, #c084fc);
+  background: linear-gradient(135deg, #5eead4, #fdba74);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -326,7 +334,7 @@
 /* ── Sync / primary button ── */
 .btn-sync {
   padding: 9px 20px;
-  background: linear-gradient(135deg, var(--accent), #818cf8);
+  background: linear-gradient(135deg, var(--action), var(--action-light));
   color: white;
   border: none;
   border-radius: var(--radius-sm);
@@ -335,13 +343,13 @@
   font-size: 0.86em;
   font-family: inherit;
   transition: all 0.22s var(--ease-spring);
-  box-shadow: 0 2px 8px var(--accent-glow);
+  box-shadow: 0 2px 8px var(--action-glow);
 }
 
 .btn-sync:hover:not(:disabled) {
   transform: translateY(-1px) scale(1.015);
-  box-shadow: var(--shadow-glow);
-  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
+  box-shadow: 0 0 0 1px rgba(var(--action-rgb), 0.18), 0 8px 32px -8px rgba(var(--action-rgb), 0.5);
+  background: linear-gradient(135deg, var(--action-hover), var(--action));
 }
 
 .btn-sync:active:not(:disabled) {
@@ -433,8 +441,8 @@
 
 .email-status {
   font-size: 0.7em;
-  color: #7c3aed;
-  background-color: #ede9fe;
+  color: var(--accent);
+  background-color: var(--accent-glow);
   padding: 3px 9px;
   border-radius: 20px;
   font-weight: 700;
@@ -443,15 +451,15 @@
   letter-spacing: 0.3px;
 }
 
-/* AI-touched content (summaries, drafts) gets the indigo→violet accent — reserved for places
-   the model actually generated something, so the gradient keeps meaning "AI did this" rather
-   than becoming decoration. */
+/* AI-touched content (summaries, drafts) gets the teal→amber brand gradient — reserved for
+   places the model actually generated something, so the gradient keeps meaning "AI did this"
+   rather than becoming decoration. */
 .email-summary {
   margin: 0 0 6px 0;
   color: var(--text-secondary);
   font-size: 0.86em;
   line-height: 1.5;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.07), rgba(139, 92, 246, 0.07));
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.08), rgba(var(--action-rgb), 0.07));
   border-radius: var(--radius-sm);
   padding: 8px 12px;
 }
@@ -549,7 +557,7 @@
 }
 
 .thread-message.expanded {
-  border-color: #c7d2fe;
+  border-color: var(--accent-light);
 }
 
 .thread-message-header {
@@ -831,7 +839,7 @@
   height: 24px;
   margin-top: 1px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--action));
   color: #fff;
   font-size: 0.72em;
   font-weight: 700;
@@ -848,7 +856,7 @@
   border-radius: 10px;
   background: var(--accent-glow);
   color: var(--accent);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
   white-space: nowrap;
 }
 
@@ -1045,7 +1053,7 @@
 .drafting-email-item:hover {
   border-color: var(--accent-light);
   background-color: var(--accent-glow);
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.06);
+  box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.06);
 }
 
 .drafting-email-item.selected {
@@ -1099,7 +1107,7 @@
   font-size: 0.875em;
   margin: 0 0 8px 0;
   line-height: 1.55;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.07), rgba(139, 92, 246, 0.07));
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.08), rgba(var(--action-rgb), 0.07));
   border-radius: var(--radius-sm);
   padding: 8px 12px;
 }
@@ -1128,7 +1136,7 @@
   left: 0;
   right: 0;
   height: 3px;
-  background: linear-gradient(90deg, var(--accent), #8b5cf6);
+  background: linear-gradient(90deg, var(--accent), var(--action));
 }
 
 .draft-output-header {
@@ -1142,7 +1150,7 @@
   margin: 0;
   font-size: 0.92em;
   font-weight: 700;
-  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  background: linear-gradient(135deg, var(--accent), var(--action));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -1182,11 +1190,16 @@
    data-theme ancestor (the login screen forces "midnight") can't leak
    custom properties into the authenticated app. */
 [data-theme="indigo"] {
-  --accent: #6366f1;
-  --accent-light: #818cf8;
-  --accent-hover: #4f46e5;
-  --accent-rgb: 99, 102, 241;
-  --accent-glow: rgba(99, 102, 241, 0.25);
+  --accent: #0d9488;
+  --accent-light: #14b8a6;
+  --accent-hover: #0f766e;
+  --accent-rgb: 13, 148, 136;
+  --accent-glow: rgba(13, 148, 136, 0.25);
+  --action: #ea580c;
+  --action-light: #fb923c;
+  --action-hover: #c2410c;
+  --action-rgb: 234, 88, 12;
+  --action-glow: rgba(234, 88, 12, 0.28);
   --bg: #f1f5f9;
   --surface: #ffffff;
   --surface-raised: #fafafa;
@@ -1198,7 +1211,7 @@
   --sidebar-bg-from: #1e293b;
   --sidebar-bg-to: #0f172a;
   --sidebar-border: rgba(255, 255, 255, 0.07);
-  --sidebar-active: rgba(99, 102, 241, 0.18);
+  --sidebar-active: rgba(13, 148, 136, 0.18);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.07), 0 2px 6px rgba(0, 0, 0, 0.04);
   --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.05);
@@ -1261,11 +1274,16 @@
 
 /* Midnight (dark) */
 [data-theme="midnight"] {
-  --accent: #818cf8;
-  --accent-light: #a5b4fc;
-  --accent-hover: #6366f1;
-  --accent-rgb: 129, 140, 248;
-  --accent-glow: rgba(129, 140, 248, 0.35);
+  --accent: #2dd4bf;
+  --accent-light: #5eead4;
+  --accent-hover: #14b8a6;
+  --accent-rgb: 45, 212, 191;
+  --accent-glow: rgba(45, 212, 191, 0.3);
+  --action: #fb923c;
+  --action-light: #fdba74;
+  --action-hover: #f97316;
+  --action-rgb: 251, 146, 60;
+  --action-glow: rgba(251, 146, 60, 0.32);
   --bg: #08090c;
   --surface: #101114;
   --surface-raised: #16171b;
@@ -1277,7 +1295,7 @@
   --sidebar-bg-from: #08090c;
   --sidebar-bg-to: #000000;
   --sidebar-border: rgba(255, 255, 255, 0.06);
-  --sidebar-active: rgba(129, 140, 248, 0.22);
+  --sidebar-active: rgba(45, 212, 191, 0.22);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6), 0 4px 16px rgba(0, 0, 0, 0.4);
@@ -1338,11 +1356,11 @@
 }
 
 /* swatch color fills */
-.theme-swatch[data-swatch="indigo"]  .theme-swatch-circle { background: linear-gradient(135deg, #1e293b 50%, #6366f1 50%); }
+.theme-swatch[data-swatch="indigo"]  .theme-swatch-circle { background: linear-gradient(135deg, #1e293b 50%, #0d9488 50%); }
 .theme-swatch[data-swatch="ocean"]   .theme-swatch-circle { background: linear-gradient(135deg, #0c4a6e 50%, #0ea5e9 50%); }
 .theme-swatch[data-swatch="rose"]    .theme-swatch-circle { background: linear-gradient(135deg, #4c0519 50%, #f43f5e 50%); }
 .theme-swatch[data-swatch="emerald"] .theme-swatch-circle { background: linear-gradient(135deg, #064e3b 50%, #10b981 50%); }
-.theme-swatch[data-swatch="midnight"] .theme-swatch-circle { background: linear-gradient(135deg, #060912 50%, #818cf8 50%); }
+.theme-swatch[data-swatch="midnight"] .theme-swatch-circle { background: linear-gradient(135deg, #060912 50%, #2dd4bf 50%); }
 
 /* ── Skeleton / shimmer ── */
 @keyframes shimmer {
@@ -1732,8 +1750,8 @@
   position: relative;
   overflow: hidden;
   background:
-    radial-gradient(ellipse 900px 600px at 18% 12%, rgba(129, 140, 248, 0.18), transparent 60%),
-    radial-gradient(ellipse 800px 700px at 88% 88%, rgba(196, 132, 252, 0.13), transparent 60%),
+    radial-gradient(ellipse 900px 600px at 18% 12%, rgba(45, 212, 191, 0.16), transparent 60%),
+    radial-gradient(ellipse 800px 700px at 88% 88%, rgba(251, 146, 60, 0.11), transparent 60%),
     var(--bg);
   font-family: var(--font-body);
 }
@@ -1826,7 +1844,7 @@
 }
 
 .login-shell .amplify-button--primary {
-  background: linear-gradient(135deg, var(--accent), #8b5cf6) !important;
+  background: linear-gradient(135deg, var(--action), var(--action-light)) !important;
   border-radius: var(--radius-sm) !important;
   font-family: var(--font-body) !important;
   font-weight: 600 !important;
@@ -1834,7 +1852,7 @@
 }
 
 .login-shell .amplify-button--primary:hover {
-  box-shadow: var(--shadow-glow) !important;
+  box-shadow: 0 0 0 1px rgba(var(--action-rgb), 0.18), 0 8px 32px -8px rgba(var(--action-rgb), 0.5) !important;
   transform: translateY(-1px);
 }
 

@@ -137,8 +137,10 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// id 'indigo' is a historical key (data-theme="indigo" in App.css, localStorage values) — its
+// actual accent color is teal now, hence the label mismatch here.
 const THEMES: { id: ThemeId; label: string }[] = [
-  { id: 'indigo',   label: 'Indigo'   },
+  { id: 'indigo',   label: 'Teal'     },
   { id: 'ocean',    label: 'Ocean'    },
   { id: 'rose',     label: 'Rose'     },
   { id: 'emerald',  label: 'Emerald'  },
@@ -202,10 +204,10 @@ function App() {
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [labelSaving, setLabelSaving] = useState<boolean>(false);
   const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
-  const [editLabelDraft, setEditLabelDraft] = useState<{ name: string; description: string; color: string }>({ name: '', description: '', color: '#6366f1' });
+  const [editLabelDraft, setEditLabelDraft] = useState<{ name: string; description: string; color: string }>({ name: '', description: '', color: '#0d9488' });
   const [newLabelName, setNewLabelName] = useState<string>('');
   const [newLabelDescription, setNewLabelDescription] = useState<string>('');
-  const [newLabelColor, setNewLabelColor] = useState<string>('#6366f1');
+  const [newLabelColor, setNewLabelColor] = useState<string>('#0d9488');
 
   const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
   const [categoryItemsLoading, setCategoryItemsLoading] = useState<boolean>(false);
@@ -728,7 +730,7 @@ function App() {
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       setNewLabelName('');
       setNewLabelDescription('');
-      setNewLabelColor('#6366f1');
+      setNewLabelColor('#0d9488');
       await loadLabels();
       showToast('Label created', 'success');
     } catch (error) {
