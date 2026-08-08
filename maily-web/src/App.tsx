@@ -148,7 +148,7 @@ const THEMES: { id: ThemeId; label: string }[] = [
 function App() {
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats' | 'drafting' | 'categories'>('inbox'); // which tab is visible
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'settings' | 'stats' | 'drafting' | 'categories'>('dashboard'); // which tab is visible
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -889,6 +889,9 @@ function App() {
             </div>
 
             <div className="sidebar-nav">
+              <div onClick={() => setActiveTab('dashboard')} className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}>
+                🏠 Dashboard
+              </div>
               <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
                 📥 Inbox
               </div>
@@ -918,6 +921,136 @@ function App() {
 
           {/* Main content */}
           <div className="main-content">
+
+            {/* Dashboard Tab */}
+            {activeTab === 'dashboard' && (() => {
+              const totalCount = emails.length;
+              const unreadCount = emails.filter(e => e.status === 'unread').length;
+              const readCount = totalCount - unreadCount;
+              return (
+                <>
+                  <header className="tab-header">
+                    <h1>Dashboard</h1>
+                    <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
+                      {loading ? 'Loading data...' : '🔄 Sync with Server'}
+                    </button>
+                  </header>
+
+                  <div className="tab-body">
+                    {/* AI digest hero */}
+                    <div className="email-card">
+                      <div className="email-card-header">
+                        <h3>🧠 Today's Summary</h3>
+                      </div>
+
+                      {loading ? (
+                        <div className="email-list">
+                          {[1, 2, 3].map(i => (
+                            <div key={i} className="skeleton-email-item">
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                                <div className="skeleton skeleton-row medium" />
+                                <div className="skeleton skeleton-badge" />
+                              </div>
+                              <div className="skeleton skeleton-row full" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : totalCount === 0 ? (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">✨</div>
+                          <p>No emails synced yet.<br/>Sync your inbox to see your AI-powered digest.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <p style={{ padding: '0 0 14px', color: 'var(--text-secondary)', fontSize: '0.88em' }}>
+                            <strong>{totalCount}</strong> email{totalCount === 1 ? '' : 's'} in your inbox
+                            {unreadCount > 0 && (
+                              <> · <span style={{ color: '#d97706', fontWeight: 700 }}>{unreadCount} need{unreadCount === 1 ? 's' : ''} attention</span></>
+                            )}
+                          </p>
+                          <div className="email-list">
+                            {emails.slice(0, 3).map((email, i) => (
+                              <div
+                                key={email.emailId ?? i}
+                                className="email-item email-item-clickable dashboard-digest-item"
+                                onClick={() => openEmailDetail(email)}
+                              >
+                                <div className="dashboard-rank-badge">{i + 1}</div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div className="email-item-header">
+                                    <strong className="email-subject">{email.subject}</strong>
+                                    <span className="email-status">STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}</span>
+                                  </div>
+                                  {email.summary && <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Bento stat row */}
+                    {totalCount > 0 && (
+                      <div className="stats-cards" style={{ marginTop: '1.5rem' }}>
+                        <div className="stat-card stat-card-wide">
+                          <div className="stat-number">{totalCount}</div>
+                          <div className="stat-label">Total Emails</div>
+                          <div className="stat-proportion-bar">
+                            <div className="stat-proportion-unread" style={{ width: `${(unreadCount / totalCount) * 100}%` }} />
+                            <div className="stat-proportion-read" style={{ width: `${(readCount / totalCount) * 100}%` }} />
+                          </div>
+                          <div className="stat-proportion-legend">
+                            <span><i className="stat-dot stat-dot-unread" />{unreadCount} unread</span>
+                            <span><i className="stat-dot stat-dot-read" />{readCount} read</span>
+                          </div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{unreadCount}</div>
+                          <div className="stat-label">Unread</div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{readCount}</div>
+                          <div className="stat-label">Read</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recent emails */}
+                    <div className="email-card" style={{ marginTop: '1.5rem' }}>
+                      <div className="email-card-header">
+                        <h3>📬 Recent Emails</h3>
+                        <button
+                          onClick={() => setActiveTab('inbox')}
+                          style={{ background: 'none', border: 'none', color: 'var(--accent)', fontWeight: 600, fontSize: '0.85em', cursor: 'pointer', fontFamily: 'inherit' }}
+                        >
+                          View all →
+                        </button>
+                      </div>
+                      {totalCount === 0 ? (
+                        <p style={{ padding: '1rem', color: 'var(--text-muted)' }}>No emails to show.</p>
+                      ) : (
+                        <div className="email-list">
+                          {emails.slice(0, 5).map((email, i) => (
+                            <div
+                              key={email.emailId ?? i}
+                              className="email-item email-item-clickable"
+                              onClick={() => openEmailDetail(email)}
+                            >
+                              <div className="email-item-header">
+                                <strong className="email-subject">{email.subject}</strong>
+                                <span className="email-status">STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}</span>
+                              </div>
+                              {email.summary && <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
 
             {/* Inbox Tab */}
             {activeTab === 'inbox' && (

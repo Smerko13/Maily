@@ -725,6 +725,28 @@
   color: var(--text-primary);
 }
 
+/* ── Dashboard ── */
+.dashboard-digest-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.dashboard-rank-badge {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  color: #fff;
+  font-size: 0.72em;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* ── Per-email account badge ── */
 .email-account-badge {
   font-size: 0.72em;
