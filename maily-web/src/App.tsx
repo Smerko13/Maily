@@ -931,7 +931,7 @@ function App() {
                 <div className="sidebar-avatar">{(user?.signInDetails?.loginId || user?.username || '?').charAt(0).toUpperCase()}</div>
                 <div className="sidebar-profile-info">
                   <span className="sidebar-profile-label">Signed in as</span>
-                  <strong className="sidebar-profile-email">{user?.signInDetails?.loginId || user?.username}</strong>
+                  <strong className="sidebar-profile-email" title={user?.signInDetails?.loginId || user?.username}>{user?.signInDetails?.loginId || user?.username}</strong>
                 </div>
               </div>
               <div className="sidebar-footer-actions">
