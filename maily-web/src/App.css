@@ -155,8 +155,14 @@
   font-size: 1.05em;
 }
 
+.sidebar-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .btn-logout {
-  width: 100%;
+  flex: 1;
   padding: 9px;
   background-color: transparent;
   color: #f87171;
@@ -172,6 +178,26 @@
 .btn-logout:hover {
   background-color: rgba(248, 113, 113, 0.1);
   border-color: #f87171;
+}
+
+.btn-theme-toggle {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: transparent;
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.95em;
+  transition: all 0.18s ease;
+}
+
+.btn-theme-toggle:hover {
+  background-color: var(--sidebar-hover);
+  border-color: var(--accent-light);
 }
 
 /* ── Main content ── */
@@ -324,11 +350,17 @@
   letter-spacing: 0.3px;
 }
 
+/* AI-touched content (summaries, drafts) gets the indigo→violet accent — reserved for places
+   the model actually generated something, so the gradient keeps meaning "AI did this" rather
+   than becoming decoration. */
 .email-summary {
   margin: 0 0 6px 0;
   color: var(--text-secondary);
   font-size: 0.86em;
   line-height: 1.5;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.07), rgba(139, 92, 246, 0.07));
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
 }
 
 .email-content {
@@ -635,6 +667,64 @@
   color: #fff;
 }
 
+/* ── Inbox search ── */
+.inbox-search-bar {
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.inbox-search-input-wrap {
+  position: relative;
+  max-width: 360px;
+}
+
+.inbox-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.8em;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.inbox-search-input {
+  width: 100%;
+  padding: 8px 32px 8px 32px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 0.85em;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.inbox-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.inbox-search-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 1.1em;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.inbox-search-clear:hover {
+  color: var(--text-primary);
+}
+
 /* ── Per-email account badge ── */
 .email-account-badge {
   font-size: 0.72em;
@@ -692,6 +782,49 @@
   box-shadow: var(--shadow-lg);
 }
 
+.stat-card-wide {
+  flex: 2;
+  text-align: left;
+}
+
+.stat-proportion-bar {
+  display: flex;
+  height: 6px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border);
+  margin-top: 14px;
+}
+
+.stat-proportion-unread { background-color: #f59e0b; }
+.stat-proportion-read { background-color: #10b981; }
+
+.stat-proportion-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+  font-size: 0.76em;
+  color: var(--text-muted);
+}
+
+.stat-proportion-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.stat-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  font-style: normal;
+}
+
+.stat-dot-unread { background-color: #f59e0b; }
+.stat-dot-read { background-color: #10b981; }
+
 .stat-number {
   font-size: 2.6em;
   font-weight: 800;
@@ -706,6 +839,55 @@
   font-size: 0.86em;
   font-weight: 500;
   letter-spacing: 0.2px;
+}
+
+/* ── Draft tone picker ── */
+.draft-tone-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 1rem;
+}
+
+.draft-tone-picker {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.draft-tone-option {
+  padding: 7px 14px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.82em;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+}
+
+.draft-tone-option:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.draft-tone-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.draft-tone-option.active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.draft-generate-btn {
+  flex: 1;
 }
 
 /* ── Smart Drafting ── */
@@ -746,15 +928,15 @@
 }
 
 .drafting-email-item:hover {
-  border-color: #c7d2fe;
-  background-color: #fafafe;
+  border-color: var(--accent-light);
+  background-color: var(--accent-glow);
   box-shadow: 0 2px 8px rgba(99, 102, 241, 0.06);
 }
 
 .drafting-email-item.selected {
   border-color: var(--accent);
-  background-color: #eef2ff;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  background-color: var(--accent-glow);
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .drafting-email-snippet {
@@ -802,6 +984,9 @@
   font-size: 0.875em;
   margin: 0 0 8px 0;
   line-height: 1.55;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.07), rgba(139, 92, 246, 0.07));
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
 }
 
 .drafting-snippet {
@@ -812,12 +997,23 @@
 }
 
 .draft-output {
+  position: relative;
   background-color: var(--surface);
   border-radius: var(--radius-md);
   padding: 22px 24px;
   box-shadow: var(--shadow-md);
   border: 1px solid var(--border);
-  border-top: 3px solid var(--accent);
+  overflow: hidden;
+}
+
+.draft-output::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), #8b5cf6);
 }
 
 .draft-output-header {
@@ -829,9 +1025,12 @@
 
 .draft-output-header h4 {
   margin: 0;
-  color: var(--text-primary);
   font-size: 0.92em;
   font-weight: 700;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .btn-copy {

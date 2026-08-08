@@ -123,6 +123,14 @@ interface Toast { id: number; text: string; type: 'success' | 'error' | 'info'; 
 
 type ThemeId = 'indigo' | 'ocean' | 'rose' | 'emerald' | 'midnight';
 
+type DraftTone = 'formal' | 'friendly' | 'brief';
+
+const DRAFT_TONES: { id: DraftTone; label: string }[] = [
+  { id: 'formal',   label: 'Formal' },
+  { id: 'friendly', label: 'Friendly' },
+  { id: 'brief',    label: 'Brief' },
+];
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -152,6 +160,7 @@ function App() {
   const [selectedEmailIndex, setSelectedEmailIndex] = useState<number | null>(null); // index of the email selected for drafting
   const [draft, setDraft] = useState<string>(''); // the AI-generated reply draft
   const [draftLoading, setDraftLoading] = useState<boolean>(false);
+  const [draftTone, setDraftTone] = useState<DraftTone>('formal');
   const [exportLoading, setExportLoading] = useState<boolean>(false);
   const [exportUrl, setExportUrl] = useState<string>('');
   const [fetchLimit, setFetchLimit] = useState<number>(
@@ -160,9 +169,23 @@ function App() {
   const [fetchLimitSaving, setFetchLimitSaving] = useState<boolean>(false);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
   const [accountFilter, setAccountFilter] = useState<string>('all');
-  const [theme, setTheme] = useState<ThemeId>(
-    () => (localStorage.getItem('mailyTheme') as ThemeId) ?? 'indigo'
-  );
+  const [theme, setTheme] = useState<ThemeId>(() => {
+    const stored = localStorage.getItem('mailyTheme') as ThemeId | null;
+    if (stored) return stored;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'indigo';
+  });
+
+  // Quick light/dark toggle, layered on top of the 5-theme picker: 'midnight' is already a full dark
+  // palette, so toggling just swaps to/from it and remembers whichever light theme you were on before.
+  const toggleDarkMode = () => {
+    if (theme === 'midnight') {
+      const lastLight = (localStorage.getItem('mailyLastLightTheme') as ThemeId) || 'indigo';
+      setTheme(lastLight);
+    } else {
+      localStorage.setItem('mailyLastLightTheme', theme);
+      setTheme('midnight');
+    }
+  };
   const [expandedEmailId, setExpandedEmailId] = useState<string | null>(null);
   const [emailBodies, setEmailBodies] = useState<Record<string, EmailBody>>({});
   const [bodyLoadingId, setBodyLoadingId] = useState<string | null>(null);
@@ -171,6 +194,7 @@ function App() {
   const [threadLoadingId, setThreadLoadingId] = useState<string | null>(null);
   const [openedEmail, setOpenedEmail] = useState<Email | null>(null); // set = showing the detail view instead of the inbox list
 
+  const [inboxSearch, setInboxSearch] = useState<string>('');
   const [labels, setLabels] = useState<LabelDef[]>([]);
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [labelSaving, setLabelSaving] = useState<boolean>(false);
@@ -441,7 +465,7 @@ function App() {
   };
 
   // Generate a draft reply for the selected email
-  const fetchDraft = async (email: Email) => {
+  const fetchDraft = async (email: Email, tone: DraftTone) => {
     setDraftLoading(true);
     setDraft('');
     try {
@@ -459,7 +483,8 @@ function App() {
         body: JSON.stringify({
           subject: email.subject,
           summary: email.summary,
-          content: email.content
+          content: email.content,
+          tone
         })
       });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -877,7 +902,17 @@ function App() {
 
             <div className="sidebar-footer">
               <p className="sidebar-user">Logged in as:<br/><strong>{user?.signInDetails?.loginId || user?.username}</strong></p>
-              <button onClick={signOut} className="btn-logout">Log Out</button>
+              <div className="sidebar-footer-actions">
+                <button onClick={signOut} className="btn-logout">Log Out</button>
+                <button
+                  onClick={toggleDarkMode}
+                  className="btn-theme-toggle"
+                  aria-label={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
+                  title={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
+                >
+                  {theme === 'midnight' ? '☀️' : '🌙'}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1032,6 +1067,31 @@ function App() {
                     </div>
                   )}
 
+                  {/* Search — subject, sender, or content */}
+                  {emails.length > 0 && (
+                    <div className="inbox-search-bar">
+                      <div className="inbox-search-input-wrap">
+                        <span className="inbox-search-icon">🔎</span>
+                        <input
+                          type="text"
+                          value={inboxSearch}
+                          onChange={e => setInboxSearch(e.target.value)}
+                          placeholder="Search by subject, sender, or content"
+                          className="inbox-search-input"
+                        />
+                        {inboxSearch && (
+                          <button
+                            className="inbox-search-clear"
+                            onClick={() => setInboxSearch('')}
+                            aria-label="Clear search"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="tab-body">
                     <div className="email-card">
                       <div className="email-card-header">
@@ -1039,9 +1099,19 @@ function App() {
                       </div>
 
                       {(() => {
-                        const visibleEmails = labelFilter === 'all'
+                        const byLabel = labelFilter === 'all'
                           ? emails
                           : emails.filter(e => (e.labels || []).includes(labelFilter));
+                        const query = inboxSearch.trim().toLowerCase();
+                        const visibleEmails = query
+                          ? byLabel.filter(e =>
+                              e.subject?.toLowerCase().includes(query) ||
+                              e.from?.toLowerCase().includes(query) ||
+                              e.providerEmail?.toLowerCase().includes(query) ||
+                              e.content?.toLowerCase().includes(query) ||
+                              e.summary?.toLowerCase().includes(query)
+                            )
+                          : byLabel;
                         return loading ? (
                         <div className="email-list">
                           {[1,2,3,4].map(i => (
@@ -1105,6 +1175,11 @@ function App() {
                             </div>
                           ))}
                         </div>
+                      ) : query ? (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">🔎</div>
+                          <p>No matches for "{inboxSearch.trim()}".<br/>Try a different subject or sender.</p>
+                        </div>
                       ) : (
                         <div className="empty-inbox">
                           <div className="empty-inbox-icon">📭</div>
@@ -1164,14 +1239,27 @@ function App() {
                               <p className="drafting-snippet">{emails[selectedEmailIndex].content}</p>
                             </div>
 
-                            <button
-                              onClick={() => fetchDraft(emails[selectedEmailIndex!])}
-                              disabled={draftLoading}
-                              className="btn-sync"
-                              style={{ marginBottom: '1rem' }}
-                            >
-                              {draftLoading ? '⏳ Generating...' : '✨ Generate Draft Reply'}
-                            </button>
+                            <div className="draft-tone-row">
+                              <div className="draft-tone-picker">
+                                {DRAFT_TONES.map(t => (
+                                  <button
+                                    key={t.id}
+                                    className={`draft-tone-option ${draftTone === t.id ? 'active' : ''}`}
+                                    onClick={() => setDraftTone(t.id)}
+                                    disabled={draftLoading}
+                                  >
+                                    {t.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                onClick={() => fetchDraft(emails[selectedEmailIndex!], draftTone)}
+                                disabled={draftLoading}
+                                className="btn-sync draft-generate-btn"
+                              >
+                                {draftLoading ? '⏳ Generating...' : '✨ Generate Draft Reply'}
+                              </button>
+                            </div>
 
                             {draftLoading && (
                               <div className="skeleton-draft">
@@ -1378,9 +1466,21 @@ function App() {
                     <>
                       {/* Summary cards */}
                       <div className="stats-cards">
-                        <div className="stat-card">
+                        <div className="stat-card stat-card-wide">
                           <div className="stat-number">{stats.total}</div>
                           <div className="stat-label">Total Emails</div>
+                          {stats.total > 0 && (
+                            <>
+                              <div className="stat-proportion-bar">
+                                <div className="stat-proportion-unread" style={{ width: `${(stats.unread / stats.total) * 100}%` }} />
+                                <div className="stat-proportion-read" style={{ width: `${(stats.read / stats.total) * 100}%` }} />
+                              </div>
+                              <div className="stat-proportion-legend">
+                                <span><i className="stat-dot stat-dot-unread" />{stats.unread} unread</span>
+                                <span><i className="stat-dot stat-dot-read" />{stats.read} read</span>
+                              </div>
+                            </>
+                          )}
                         </div>
                         <div className="stat-card">
                           <div className="stat-number">{stats.unread}</div>

@@ -1605,6 +1605,7 @@ def handle_draft_email(event):
         subject = body.get('subject', '(No Subject)')
         summary = body.get('summary', '')
         content = body.get('content', '')
+        tone = body.get('tone', 'formal')
 
         if not summary and not content:
             return {
@@ -1612,9 +1613,16 @@ def handle_draft_email(event):
                 "body": json.dumps({"error": "No email content provided to draft a reply for."})
             }
 
+        tone_instructions = {
+            "formal": "Write a professional and polite reply.",
+            "friendly": "Write a warm, friendly, conversational reply, like a helpful colleague, not stiff or overly formal.",
+            "brief": "Write a short, brief reply. Two to three sentences at most, straight to the point.",
+        }
+        tone_instruction = tone_instructions.get(tone, tone_instructions["formal"])
+
         api_key = get_secrets()['OPENAI_API_KEY']
         prompt = (
-            f"You are a helpful email assistant. Write a professional and polite reply to the following email.\n\n"
+            f"You are a helpful email assistant. {tone_instruction}\n\n"
             f"Subject: {subject}\n"
             f"Summary: {summary}\n"
             f"Original snippet: {content}\n\n"
