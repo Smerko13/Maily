@@ -2,6 +2,10 @@ import { useState, useEffect, useRef } from "react";
 import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
+import {
+  LayoutDashboard, Inbox as InboxIcon, Sparkles, Truck, BarChart3, Settings,
+  LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen,
+} from 'lucide-react';
 import './App.css';
 
 interface Attachment {
@@ -176,9 +180,7 @@ function App() {
     if (stored) return stored;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'indigo';
   });
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(
-    () => window.matchMedia('(min-width: 900px)').matches
-  );
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
 
   // Quick light/dark toggle, layered on top of the 5-theme picker: 'midnight' is already a full dark
   // palette, so toggling just swaps to/from it and remembers whichever light theme you were on before.
@@ -871,20 +873,7 @@ function App() {
   };
 
   //The UI / JSX
-  return (
-    <div className="login-shell" data-theme="midnight">
-      <Authenticator loginMechanisms={['email']} components={{
-          Header() {
-            return (
-              <div className="login-header">
-                <img src="/maily-logo.png" alt="Maily" className="login-header-logo" />
-                <p className="login-header-title">Maily</p>
-                <p className="login-header-subtitle">Smart Email Assistant</p>
-              </div>
-            );
-          }
-        }}>
-        {({ signOut, user }) => (
+  const renderApp = ({ signOut, user }: { signOut?: (data?: any) => void; user?: any }) => (
           <div className="app-layout" data-theme={theme}>
 
           {/* Hamburger toggle — floats in place once the sidebar is collapsed */}
@@ -895,7 +884,7 @@ function App() {
               aria-label="Open menu"
               title="Open menu"
             >
-              ☰
+              <PanelLeftOpen size={18} strokeWidth={2} />
             </button>
           )}
 
@@ -903,45 +892,59 @@ function App() {
           <div className={`sidebar ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
             <div className="sidebar-header">
               <h2 className="sidebar-logo">
+                <img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span>
                 <button
                   onClick={() => setSidebarOpen(false)}
                   className="sidebar-hamburger"
                   aria-label="Close menu"
                   title="Close menu"
                 >
-                  ☰
+                  <PanelLeftClose size={17} strokeWidth={2} />
                 </button>
-                <img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span>
               </h2>
               <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
 
             <div className="sidebar-nav">
               <div onClick={() => setActiveTab('dashboard')} className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}>
-                🏠 Dashboard
+                <span className="nav-item-icon"><LayoutDashboard size={17} strokeWidth={2} /></span>Dashboard
               </div>
               <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
-                📥 Inbox
+                <span className="nav-item-icon"><InboxIcon size={17} strokeWidth={2} /></span>Inbox
               </div>
-              <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>✨ Smart Drafting</div>
-              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>🚚 Smart Categories</div>
-              <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>📊 Statistics</div>
+              <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><Sparkles size={17} strokeWidth={2} /></span>Smart Drafting
+              </div>
+              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><Truck size={17} strokeWidth={2} /></span>Smart Categories
+              </div>
+              <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><BarChart3 size={17} strokeWidth={2} /></span>Statistics
+              </div>
               <div onClick={() => setActiveTab('settings')} className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
-                ⚙️ Settings
+                <span className="nav-item-icon"><Settings size={17} strokeWidth={2} /></span>Settings
               </div>
             </div>
 
             <div className="sidebar-footer">
-              <p className="sidebar-user">Logged in as:<br/><strong>{user?.signInDetails?.loginId || user?.username}</strong></p>
+              <div className="sidebar-profile">
+                <div className="sidebar-avatar">{(user?.signInDetails?.loginId || user?.username || '?').charAt(0).toUpperCase()}</div>
+                <div className="sidebar-profile-info">
+                  <span className="sidebar-profile-label">Signed in as</span>
+                  <strong className="sidebar-profile-email">{user?.signInDetails?.loginId || user?.username}</strong>
+                </div>
+              </div>
               <div className="sidebar-footer-actions">
-                <button onClick={signOut} className="btn-logout">Log Out</button>
+                <button onClick={signOut} className="btn-logout">
+                  <LogOut size={14} strokeWidth={2} />Log Out
+                </button>
                 <button
                   onClick={toggleDarkMode}
                   className="btn-theme-toggle"
                   aria-label={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
                   title={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
                 >
-                  {theme === 'midnight' ? '☀️' : '🌙'}
+                  {theme === 'midnight' ? <Sun size={16} strokeWidth={2} /> : <Moon size={16} strokeWidth={2} />}
                 </button>
               </div>
             </div>
@@ -965,6 +968,32 @@ function App() {
                   </header>
 
                   <div className="tab-body">
+                    {/* Bento stat row */}
+                    {totalCount > 0 && (
+                      <div className="stats-cards stats-cards-compact">
+                        <div className="stat-card stat-card-wide">
+                          <div className="stat-number">{totalCount}</div>
+                          <div className="stat-label">Total Emails</div>
+                          <div className="stat-proportion-bar">
+                            <div className="stat-proportion-unread" style={{ width: `${(unreadCount / totalCount) * 100}%` }} />
+                            <div className="stat-proportion-read" style={{ width: `${(readCount / totalCount) * 100}%` }} />
+                          </div>
+                          <div className="stat-proportion-legend">
+                            <span><i className="stat-dot stat-dot-unread" />{unreadCount} unread</span>
+                            <span><i className="stat-dot stat-dot-read" />{readCount} read</span>
+                          </div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{unreadCount}</div>
+                          <div className="stat-label">Unread</div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{readCount}</div>
+                          <div className="stat-label">Read</div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* AI digest hero */}
                     <div className="email-card">
                       <div className="email-card-header">
@@ -1017,32 +1046,6 @@ function App() {
                         </>
                       )}
                     </div>
-
-                    {/* Bento stat row */}
-                    {totalCount > 0 && (
-                      <div className="stats-cards" style={{ marginTop: '1.5rem' }}>
-                        <div className="stat-card stat-card-wide">
-                          <div className="stat-number">{totalCount}</div>
-                          <div className="stat-label">Total Emails</div>
-                          <div className="stat-proportion-bar">
-                            <div className="stat-proportion-unread" style={{ width: `${(unreadCount / totalCount) * 100}%` }} />
-                            <div className="stat-proportion-read" style={{ width: `${(readCount / totalCount) * 100}%` }} />
-                          </div>
-                          <div className="stat-proportion-legend">
-                            <span><i className="stat-dot stat-dot-unread" />{unreadCount} unread</span>
-                            <span><i className="stat-dot stat-dot-read" />{readCount} read</span>
-                          </div>
-                        </div>
-                        <div className="stat-card">
-                          <div className="stat-number">{unreadCount}</div>
-                          <div className="stat-label">Unread</div>
-                        </div>
-                        <div className="stat-card">
-                          <div className="stat-number">{readCount}</div>
-                          <div className="stat-label">Read</div>
-                        </div>
-                      </div>
-                    )}
 
                     {/* Recent emails */}
                     <div className="email-card" style={{ marginTop: '1.5rem' }}>
@@ -1900,7 +1903,22 @@ function App() {
             ))}
           </div>
         </div>
-        )}
+  );
+
+  return (
+    <div className="login-shell" data-theme="midnight">
+      <Authenticator loginMechanisms={['email']} components={{
+          Header() {
+            return (
+              <div className="login-header">
+                <img src="/maily-logo.png" alt="Maily" className="login-header-logo" />
+                <p className="login-header-title">Maily</p>
+                <p className="login-header-subtitle">Smart Email Assistant</p>
+              </div>
+            );
+          }
+        }}>
+        {renderApp}
       </Authenticator>
     </div>
   );
