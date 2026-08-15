@@ -9,6 +9,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from email.message import EmailMessage
+from email.utils import getaddresses, parseaddr
 from botocore.exceptions import ClientError
 
 dynamodb = boto3.resource('dynamodb')
@@ -138,7 +140,7 @@ def refresh_microsoft_access_token(user_id, outlook_email, refresh_token):
         'client_secret': client_secret,
         'refresh_token': refresh_token,
         'grant_type': 'refresh_token',
-        'scope': 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read'
+        'scope': 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send'
     }).encode('utf-8')
 
     req = urllib.request.Request('https://login.microsoftonline.com/common/oauth2/v2.0/token', data=data, method='POST')
@@ -166,6 +168,31 @@ def api_get(user_id, account, url):
         refresh_token = account.get('refresh_token')
         if e.code == 401 and refresh_token:
             print(f"Token expired for {account['email']} ({account['provider']}), refreshing...")
+            if account['provider'] == 'outlook':
+                new_token = refresh_microsoft_access_token(user_id, account['email'], refresh_token)
+            else:
+                new_token = refresh_google_access_token(user_id, account['email'], refresh_token)
+            account['access_token'] = new_token
+            return _do(new_token)
+        raise
+
+def api_request(user_id, account, url, method='POST', payload=None):
+    """Call a provider API with JSON, refreshing the account token once after a 401."""
+    def _do(token):
+        data = json.dumps(payload).encode('utf-8') if payload is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header('Authorization', f'Bearer {token}')
+        if payload is not None:
+            req.add_header('Content-Type', 'application/json')
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode('utf-8')) if raw else None
+
+    try:
+        return _do(account['access_token'])
+    except urllib.error.HTTPError as e:
+        refresh_token = account.get('refresh_token')
+        if e.code == 401 and refresh_token:
             if account['provider'] == 'outlook':
                 new_token = refresh_microsoft_access_token(user_id, account['email'], refresh_token)
             else:
@@ -555,14 +582,19 @@ def ai_match_category_item(extracted, summary, existing_items, category_type):
 
 
 def lambda_handler(event, context):
-    print("Received event:", json.dumps(event))
-
     # Detect EventBridge scheduled event (not an HTTP request)
     if event.get('source') == 'aws.events' or event.get('detail-type') == 'Scheduled Event':
+        print("Received scheduled sync event")
         return handle_scheduled_sync()
 
-    http_method = event.get('httpMethod') or event.get('requestContext', {}).get('http', {}).get('method', '')
+    request_context = event.get('requestContext', {})
+    http_method = event.get('httpMethod') or request_context.get('http', {}).get('method', '')
     path = event.get('path') or event.get('rawPath', '')
+    print("Received HTTP request:", json.dumps({
+        "requestId": request_context.get('requestId'),
+        "method": http_method,
+        "path": path,
+    }))
 
     if http_method == 'GET' and path == '/hello': 
         return handle_get_emails(event)
@@ -576,6 +608,8 @@ def lambda_handler(event, context):
         return handle_get_stats(event)
     elif http_method == 'POST' and path == '/draft':
         return handle_draft_email(event)
+    elif http_method == 'POST' and path == '/send':
+        return handle_send_email(event)
     elif http_method == 'POST' and path == '/export':
         return handle_export(event)
     elif http_method == 'POST' and path == '/settings':
@@ -618,46 +652,51 @@ def handle_save_settings(event):
             }
 
         body = json.loads(event.get('body', '{}'))
-        raw_limit = body.get('email_fetch_limit')
-
-        if raw_limit is None:
+        has_limit = 'email_fetch_limit' in body
+        has_signature = 'signature' in body
+        if not has_limit and not has_signature:
             return {
                 "statusCode": 400,
-                "body": json.dumps({"error": "Missing required field: email_fetch_limit"})
+                "body": json.dumps({"error": "No supported settings were provided"})
             }
 
-        try:
-            limit = int(raw_limit)
-        except (ValueError, TypeError):
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "email_fetch_limit must be an integer"})
-            }
+        updates = []
+        values = {}
+        if has_limit:
+            try:
+                limit = int(body.get('email_fetch_limit'))
+            except (ValueError, TypeError):
+                return {"statusCode": 400, "body": json.dumps({"error": "email_fetch_limit must be an integer"})}
+            if not (1 <= limit <= 100):
+                return {"statusCode": 400, "body": json.dumps({"error": "email_fetch_limit must be between 1 and 100"})}
+            updates.append('email_fetch_limit = :limit')
+            values[':limit'] = limit
 
-        if not (1 <= limit <= 100):
-            return {
-                "statusCode": 400,
-                "body": json.dumps({"error": "email_fetch_limit must be between 1 and 100"})
-            }
+        if has_signature:
+            signature = str(body.get('signature') or '').strip()
+            if len(signature) > 2000:
+                return {"statusCode": 400, "body": json.dumps({"error": "Signature must be 2000 characters or less"})}
+            updates.append('signature = :signature')
+            values[':signature'] = signature
 
         users_table = dynamodb.Table('Maily-Users')
         users_table.update_item(
             Key={'userId': user_id},
-            UpdateExpression='SET email_fetch_limit = :l',
-            ExpressionAttributeValues={':l': limit}
+            UpdateExpression=f"SET {', '.join(updates)}",
+            ExpressionAttributeValues=values
         )
 
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"message": f"Settings saved. Fetch limit set to {limit}."})
+            "body": json.dumps({"message": "Settings saved."})
         }
 
     except Exception as e:
         print(f"Error saving settings: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": "Internal server error while saving settings", "error": str(e)})
+            "body": json.dumps({"message": "Internal server error while saving settings"})
         }
 
 def get_user_emails(user_id, account_filter=None, label_filter=None):
@@ -706,7 +745,7 @@ def handle_get_emails(event):
         print(f"Error reading from DynamoDB: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": "Failed to fetch data.", "error": str(e)})
+            "body": json.dumps({"message": "Failed to fetch data."})
         }
 
 def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
@@ -759,12 +798,20 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
         headers = payload.get('headers', [])
         subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
         sender  = next((h['value'] for h in headers if h['name'] == 'From'), '(Unknown Sender)')
+        from_address = parseaddr(sender)[1]
+        to_addresses = [address for _, address in getaddresses([
+            next((h['value'] for h in headers if h['name'].lower() == 'to'), '')
+        ]) if address]
+        cc_addresses = [address for _, address in getaddresses([
+            next((h['value'] for h in headers if h['name'].lower() == 'cc'), '')
+        ]) if address]
         snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
         label_ids = email_data.get('labelIds', [])
         is_unread = 'UNREAD' in label_ids
         provider_labels = derive_gmail_provider_labels(label_ids, user_id, account, label_name_cache)
         attachments = extract_gmail_attachments(payload)
         in_reply_to = next((h['value'] for h in headers if h['name'] == 'In-Reply-To'), '')
+        message_id = next((h['value'] for h in headers if h['name'].lower() == 'message-id'), '')
         received_at = gmail_internal_date_to_iso(email_data.get('internalDate'))
         if idx == 0:
             newest_received_at = received_at  # new_message_ids[0] is always the newest \u2014 messages is newest-first
@@ -775,6 +822,9 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
             'emailId':       email_id,
             'subject':       subject,
             'from':          sender,
+            'fromAddress':   from_address,
+            'to':            to_addresses,
+            'cc':            cc_addresses,
             'content':       snippet,
             'status':        'unread' if is_unread else 'read',
             'provider':      'gmail',
@@ -783,6 +833,7 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
             'attachments':   attachments,
             'threadId':      email_data.get('threadId', ''),
             'inReplyTo':     in_reply_to,
+            'messageId':     message_id,
             'receivedAt':    received_at,
             'bodyText':      body_text,
             'bodyHtml':      body_html
@@ -806,7 +857,7 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
     list_url = (
         f'https://graph.microsoft.com/v1.0/me/messages?$top={fetch_limit}'
         f'&$orderby=receivedDateTime%20desc'
-        f'&$select=subject,from,bodyPreview,isRead,conversationId,receivedDateTime,hasAttachments,internetMessageHeaders,body,categories'
+        f'&$select=subject,from,toRecipients,ccRecipients,replyTo,internetMessageId,bodyPreview,isRead,conversationId,receivedDateTime,hasAttachments,internetMessageHeaders,body,categories'
     )
     if last_synced_at:
         # urllib.request rejects literal spaces in URLs ("URL can't contain control characters"),
@@ -835,6 +886,8 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
         subject = msg.get('subject') or '(No Subject)'
         from_address = msg.get('from', {}).get('emailAddress', {})
         sender = from_address.get('name') or from_address.get('address') or '(Unknown Sender)'
+        to_addresses = [recipient.get('emailAddress', {}).get('address') for recipient in msg.get('toRecipients', [])]
+        cc_addresses = [recipient.get('emailAddress', {}).get('address') for recipient in msg.get('ccRecipients', [])]
         snippet = (msg.get('bodyPreview') or '').strip()
         is_unread = not msg.get('isRead', True)
         provider_labels = msg.get('categories') or []  # Graph returns ready-to-use category strings
@@ -856,6 +909,9 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
             'emailId':       email_id,
             'subject':       subject,
             'from':          sender,
+            'fromAddress':   from_address.get('address', ''),
+            'to':            [address for address in to_addresses if address],
+            'cc':            [address for address in cc_addresses if address],
             'content':       snippet,
             'status':        'unread' if is_unread else 'read',
             'provider':      'outlook',
@@ -864,6 +920,7 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
             'attachments':   attachments,
             'threadId':      msg.get('conversationId', ''),
             'inReplyTo':     in_reply_to,
+            'messageId':     msg.get('internetMessageId', ''),
             'receivedAt':    msg.get('receivedDateTime', ''),
             'bodyText':      body_text,
             'bodyHtml':      body_html
@@ -1100,15 +1157,14 @@ def handle_sync_emails(event):
         return {
             "statusCode": e.code,
             "body": json.dumps({
-                "error": "Google authentication failed",
-                "details": error_body
+                "error": "Google authentication failed"
             })
         }
     except Exception as e:
         print(f"Error in sync process: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": "Internal server error during sync", "error": str(e)})
+            "body": json.dumps({"message": "Internal server error during sync"})
         }
 
 def get_authorized_user_id(event):
@@ -1175,10 +1231,10 @@ def handle_get_email_body(event):
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
         print(f"Provider API Error: {error_body}")
-        return {"statusCode": e.code, "body": json.dumps({"error": "Provider authentication failed", "details": error_body})}
+        return {"statusCode": e.code, "body": json.dumps({"error": "Provider authentication failed"})}
     except Exception as e:
         print(f"Error fetching email body: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching email body", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching email body"})}
 
 def handle_get_attachment(event):
     """Fetches one attachment's bytes from the provider, stages it in S3, and returns a short-lived presigned URL.
@@ -1253,10 +1309,10 @@ def handle_get_attachment(event):
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
         print(f"Provider API Error: {error_body}")
-        return {"statusCode": e.code, "body": json.dumps({"error": "Provider authentication failed", "details": error_body})}
+        return {"statusCode": e.code, "body": json.dumps({"error": "Provider authentication failed"})}
     except Exception as e:
         print(f"Error fetching attachment: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching attachment", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching attachment"})}
 
 def handle_get_thread(event):
     """Returns all emails sharing a threadId for the logged-in user, ordered oldest-first."""
@@ -1292,7 +1348,7 @@ def handle_get_thread(event):
         }
     except Exception as e:
         print(f"Error fetching thread: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching thread", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching thread"})}
 
 def handle_summarize_email(event):
     """Re-generates and persists the AI summary for one already-synced email. Sync itself skips
@@ -1326,7 +1382,7 @@ def handle_summarize_email(event):
         }
     except Exception as e:
         print(f"Error summarizing email: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while summarizing email", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while summarizing email"})}
 
 def handle_mark_read(event):
     """Marks one email as read in our own stored status. This only updates Maily's record — it does
@@ -1355,7 +1411,7 @@ def handle_mark_read(event):
         }
     except Exception as e:
         print(f"Error marking email as read: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while marking email as read", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while marking email as read"})}
 
 def handle_list_labels(event):
     try:
@@ -1370,7 +1426,7 @@ def handle_list_labels(event):
         }
     except Exception as e:
         print(f"Error listing labels: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing labels", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing labels"})}
 
 def handle_create_label(event):
     try:
@@ -1403,7 +1459,7 @@ def handle_create_label(event):
         }
     except Exception as e:
         print(f"Error creating label: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while creating label", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while creating label"})}
 
 def handle_update_label(event):
     try:
@@ -1434,7 +1490,7 @@ def handle_update_label(event):
         }
     except Exception as e:
         print(f"Error updating label: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while updating label", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while updating label"})}
 
 def handle_delete_label(event):
     """Deletes a custom label definition. Known v1 limitation: does not retroactively strip the label
@@ -1458,7 +1514,7 @@ def handle_delete_label(event):
         }
     except Exception as e:
         print(f"Error deleting label: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while deleting label", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while deleting label"})}
 
 def _serialize_category_item(item):
     is_complete, is_at_risk = evaluate_category_item_state(item.get('categoryType'), item.get('fields', {}))
@@ -1499,7 +1555,7 @@ def handle_list_category_items(event):
         }
     except Exception as e:
         print(f"Error listing category items: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing smart categories", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing smart categories"})}
 
 def handle_get_category_item(event):
     """Returns one tracked smart-category item plus the full email rows it was built from, so the
@@ -1532,7 +1588,7 @@ def handle_get_category_item(event):
         }
     except Exception as e:
         print(f"Error fetching category item: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching smart category item", "error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching smart category item"})}
 
 def handle_get_stats(event):
     try:
@@ -1589,7 +1645,7 @@ def handle_get_stats(event):
         print(f"Error in stats: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": "Internal server error during stats", "error": str(e)})
+            "body": json.dumps({"message": "Internal server error during stats"})
         }
 
 def handle_draft_email(event):
@@ -1605,21 +1661,29 @@ def handle_draft_email(event):
         subject = body.get('subject', '(No Subject)')
         summary = body.get('summary', '')
         content = body.get('content', '')
+        freeform_prompt = str(body.get('prompt', '')).strip()
 
-        if not summary and not content:
+        if not summary and not content and not freeform_prompt:
             return {
                 "statusCode": 400,
                 "body": json.dumps({"error": "No email content provided to draft a reply for."})
             }
 
         api_key = get_secrets()['OPENAI_API_KEY']
-        prompt = (
-            f"You are a helpful email assistant. Write a professional and polite reply to the following email.\n\n"
-            f"Subject: {subject}\n"
-            f"Summary: {summary}\n"
-            f"Original snippet: {content}\n\n"
-            f"Write only the body of the reply, without a subject line or greeting header."
-        )
+        if freeform_prompt:
+            prompt = (
+                "You are a helpful email assistant. Draft a concise, professional email body from the "
+                f"following instructions:\n\n{freeform_prompt}\n\n"
+                "Write only the email body, without a subject line."
+            )
+        else:
+            prompt = (
+                f"You are a helpful email assistant. Write a professional and polite reply to the following email.\n\n"
+                f"Subject: {subject}\n"
+                f"Summary: {summary}\n"
+                f"Original snippet: {content}\n\n"
+                f"Write only the body of the reply, without a subject line or greeting header."
+            )
 
         request_body = json.dumps({
             "model": "gpt-4.1-nano",
@@ -1650,8 +1714,212 @@ def handle_draft_email(event):
         print(f"Error generating draft: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": "Internal server error during draft generation", "error": str(e)})
+            "body": json.dumps({"message": "Internal server error during draft generation"})
         }
+
+def _email_addresses(value):
+    if not isinstance(value, list):
+        return []
+    addresses = []
+    for address in value:
+        normalized = str(address).strip()
+        if normalized and '@' in normalized and '\n' not in normalized and '\r' not in normalized:
+            addresses.append(normalized)
+    return addresses
+
+def _decode_compose_attachments(raw_attachments):
+    if not isinstance(raw_attachments, list) or len(raw_attachments) > 10:
+        raise ValueError("A maximum of 10 attachments is allowed")
+
+    attachments = []
+    total_size = 0
+    for raw in raw_attachments:
+        filename = str(raw.get('filename', '')).strip()
+        mime_type = str(raw.get('mimeType') or 'application/octet-stream')
+        if not filename or '/' in filename or '\\' in filename:
+            raise ValueError("Each attachment must have a valid filename")
+        try:
+            content = base64.b64decode(raw.get('content', ''), validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Attachment {filename} is not valid base64") from exc
+        total_size += len(content)
+        if total_size > 3 * 1024 * 1024:
+            raise ValueError("Attachments must total 3 MB or less")
+        attachments.append({
+            'filename': filename,
+            'mimeType': mime_type,
+            'content': content,
+        })
+    return attachments
+
+def _send_gmail_message(user_id, account, message_data, attachments):
+    message = EmailMessage()
+    message['From'] = account['email']
+    message['To'] = ', '.join(message_data['to'])
+    if message_data['cc']:
+        message['Cc'] = ', '.join(message_data['cc'])
+    if message_data['bcc']:
+        message['Bcc'] = ', '.join(message_data['bcc'])
+    if message_data['replyTo']:
+        message['Reply-To'] = message_data['replyTo']
+    if message_data.get('inReplyTo'):
+        message['In-Reply-To'] = message_data['inReplyTo']
+        message['References'] = message_data['inReplyTo']
+    message['Subject'] = message_data['subject']
+    message.set_content(message_data['body'])
+
+    for attachment in attachments:
+        mime_parts = attachment['mimeType'].split('/', 1)
+        maintype = mime_parts[0] if len(mime_parts) == 2 else 'application'
+        subtype = mime_parts[1] if len(mime_parts) == 2 else 'octet-stream'
+        message.add_attachment(
+            attachment['content'],
+            maintype=maintype,
+            subtype=subtype,
+            filename=attachment['filename']
+        )
+
+    payload = {'raw': base64.urlsafe_b64encode(message.as_bytes()).decode('ascii').rstrip('=')}
+    if message_data.get('threadId'):
+        payload['threadId'] = message_data['threadId']
+    return api_request(
+        user_id,
+        account,
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+        payload=payload
+    )
+
+def _graph_recipients(addresses):
+    return [{'emailAddress': {'address': address}} for address in addresses]
+
+def _send_outlook_message(user_id, account, message_data, attachments):
+    message = {
+        'subject': message_data['subject'],
+        'body': {'contentType': 'Text', 'content': message_data['body']},
+        'toRecipients': _graph_recipients(message_data['to']),
+        'ccRecipients': _graph_recipients(message_data['cc']),
+        'bccRecipients': _graph_recipients(message_data['bcc']),
+    }
+    if message_data['replyTo']:
+        message['replyTo'] = _graph_recipients([message_data['replyTo']])
+    graph_attachments = [{
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            'name': attachment['filename'],
+            'contentType': attachment['mimeType'],
+            'contentBytes': base64.b64encode(attachment['content']).decode('ascii'),
+        } for attachment in attachments]
+
+    mode = message_data.get('mode', 'new')
+    original_id = message_data.get('originalMessageId')
+    if mode in ('reply', 'replyAll', 'forward') and original_id:
+        action = {'reply': 'createReply', 'replyAll': 'createReplyAll', 'forward': 'createForward'}[mode]
+        encoded_id = urllib.parse.quote(original_id, safe='')
+        draft = api_request(
+            user_id,
+            account,
+            f'https://graph.microsoft.com/v1.0/me/messages/{encoded_id}/{action}',
+            payload={}
+        )
+        draft_id = urllib.parse.quote(draft['id'], safe='')
+        api_request(
+            user_id,
+            account,
+            f'https://graph.microsoft.com/v1.0/me/messages/{draft_id}',
+            method='PATCH',
+            payload=message
+        )
+        for attachment in graph_attachments:
+            api_request(
+                user_id,
+                account,
+                f'https://graph.microsoft.com/v1.0/me/messages/{draft_id}/attachments',
+                payload=attachment
+            )
+        return api_request(
+            user_id,
+            account,
+            f'https://graph.microsoft.com/v1.0/me/messages/{draft_id}/send',
+            payload=None
+        )
+
+    if graph_attachments:
+        message['attachments'] = graph_attachments
+
+    return api_request(
+        user_id,
+        account,
+        'https://graph.microsoft.com/v1.0/me/sendMail',
+        payload={'message': message, 'saveToSentItems': True}
+    )
+
+def handle_send_email(event):
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized"})}
+
+        body = json.loads(event.get('body', '{}'))
+        sender_email = str(body.get('senderEmail', '')).strip()
+        provider = body.get('provider')
+        to = _email_addresses(body.get('to'))
+        cc = _email_addresses(body.get('cc'))
+        bcc = _email_addresses(body.get('bcc'))
+        subject = str(body.get('subject', '')).strip()
+        content = str(body.get('body', '')).strip()
+        reply_to = str(body.get('replyTo', '')).strip()
+
+        if provider not in ('gmail', 'outlook') or not sender_email:
+            return {"statusCode": 400, "body": json.dumps({"error": "A connected sender account is required"})}
+        if not to:
+            return {"statusCode": 400, "body": json.dumps({"error": "At least one valid recipient is required"})}
+        if not subject or not content:
+            return {"statusCode": 400, "body": json.dumps({"error": "Subject and body are required"})}
+        if reply_to and not _email_addresses([reply_to]):
+            return {"statusCode": 400, "body": json.dumps({"error": "Reply-To must be a valid email address"})}
+
+        users_table = dynamodb.Table('Maily-Users')
+        user_record = users_table.get_item(Key={'userId': user_id}).get('Item', {})
+        account = next((item for item in user_record.get('email_accounts', [])
+                        if item.get('email') == sender_email and item.get('provider') == provider), None)
+        if not account:
+            return {"statusCode": 404, "body": json.dumps({"error": "Sender account is not connected"})}
+
+        signature = str(user_record.get('signature', '')).strip()
+        if signature and not content.endswith(signature):
+            content = f"{content}\n\n{signature}"
+        attachments = _decode_compose_attachments(body.get('attachments', []))
+        message_data = {
+            'to': to,
+            'cc': cc,
+            'bcc': bcc,
+            'subject': subject,
+            'body': content,
+            'replyTo': reply_to,
+            'threadId': str(body.get('threadId', '')).strip(),
+            'inReplyTo': str(body.get('inReplyTo', '')).strip(),
+            'mode': body.get('mode', 'new'),
+            'originalMessageId': str(body.get('originalMessageId', '')).strip(),
+        }
+
+        if provider == 'outlook':
+            _send_outlook_message(user_id, account, message_data, attachments)
+        else:
+            _send_gmail_message(user_id, account, message_data, attachments)
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"message": "Email sent successfully"})
+        }
+    except ValueError as e:
+        return {"statusCode": 400, "body": json.dumps({"error": str(e)})}
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8', errors='replace')
+        print(f"Provider send error ({e.code}): {error_body}")
+        return {"statusCode": 502, "body": json.dumps({"error": "Email provider rejected the message"})}
+    except Exception as e:
+        print(f"Error sending email: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"error": "Internal server error while sending email"})}
 
 def handle_export(event):
     try:
@@ -1721,7 +1989,7 @@ def handle_export(event):
         print(f"Error during export: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"message": "Internal server error during export", "error": str(e)})
+            "body": json.dumps({"message": "Internal server error during export"})
         }
 
 
@@ -1742,11 +2010,17 @@ def handle_get_accounts(event):
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"accounts": safe_accounts})
+            "body": json.dumps({
+                "accounts": safe_accounts,
+                "settings": {
+                    "email_fetch_limit": int(result.get('Item', {}).get('email_fetch_limit', 10)),
+                    "signature": result.get('Item', {}).get('signature', '')
+                }
+            })
         }
     except Exception as e:
         print(f"Error getting accounts: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"error": "Internal server error while getting accounts"})}
 
 
 def handle_disconnect_account(event):
@@ -1799,4 +2073,4 @@ def handle_disconnect_account(event):
         }
     except Exception as e:
         print(f"Error disconnecting account: {str(e)}")
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"error": "Internal server error while disconnecting account"})}

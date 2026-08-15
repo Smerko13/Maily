@@ -131,13 +131,12 @@ def lambda_handler(event, context):
         return {
             "statusCode": e.code,
             "body": json.dumps({
-                "error": "Google authentication failed",
-                "details": error_body
+                "error": "Google authentication failed"
             })
         }
     except Exception as e:
         print(f"General Error: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"error": "Internal server error", "details": str(e)})
+            "body": json.dumps({"error": "Internal server error"})
         }
