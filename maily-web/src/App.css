@@ -1377,11 +1377,14 @@
   display: flex;
   justify-content: center;
   padding: 28px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .compose-shell {
   width: min(920px, 100%);
-  min-height: calc(100vh - 56px);
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -1518,7 +1521,7 @@
 .compose-body {
   width: 100%;
   flex: 1;
-  min-height: 300px;
+  min-height: 180px;
   resize: vertical;
   border: 0;
   outline: 0;
@@ -1580,6 +1583,9 @@
 }
 
 .compose-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -1646,7 +1652,8 @@
   }
 
   .compose-shell {
-    min-height: 100%;
+    height: 100%;
+    min-height: 0;
     border: 0;
     border-radius: 0;
   }
