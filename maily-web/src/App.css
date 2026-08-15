@@ -1544,9 +1544,12 @@
 }
 
 .compose-attachments {
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  max-height: 112px;
+  overflow-y: auto;
   padding: 12px 24px;
   border-top: 1px solid var(--border);
 }
@@ -1596,13 +1599,22 @@
 }
 
 .compose-attach {
+  border: 0;
+  background: transparent;
   color: var(--accent);
   font-weight: 750;
+  font: inherit;
   cursor: pointer;
 }
 
-.compose-attach input {
+.compose-file-input {
   display: none;
+}
+
+.compose-attachment-status {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .compose-save-state {
@@ -1675,6 +1687,10 @@
     order: 3;
     width: 100%;
     margin-left: 0;
+  }
+
+  .compose-attachment-status {
+    margin-right: auto;
   }
 
   .compose-send {

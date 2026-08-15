@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchAuthSession } from 'aws-amplify/auth';
 
 type Provider = 'gmail' | 'outlook';
@@ -57,6 +57,12 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function savedDraft(): Partial<SavedDraft> {
   try {
     return JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}');
@@ -82,8 +88,10 @@ export default function Compose({ accounts, contacts, signature, seed, onSent, o
   const [aiPrompt, setAiPrompt] = useState('');
   const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedAccount = accounts.find(account => account.email === senderEmail) || initialAccount;
+  const attachmentBytes = attachments.reduce((total, file) => total + file.size, 0);
 
   useEffect(() => {
     const draft: SavedDraft = { senderEmail, to, cc, bcc, subject, body, replyTo };
@@ -246,10 +254,24 @@ export default function Compose({ accounts, contacts, signature, seed, onSent, o
       {error && <div className="compose-error">{error}</div>}
 
       <div className="compose-footer">
-        <label className="compose-attach">
+        <button type="button" className="compose-attach" onClick={() => fileInputRef.current?.click()}>
           Attach files
-          <input type="file" multiple onChange={event => addAttachments(event.target.files)} />
-        </label>
+        </button>
+        <input
+          ref={fileInputRef}
+          className="compose-file-input"
+          type="file"
+          multiple
+          onChange={event => {
+            addAttachments(event.target.files);
+            event.target.value = '';
+          }}
+        />
+        <span className="compose-attachment-status" aria-live="polite">
+          {attachments.length > 0
+            ? `${attachments.length} file${attachments.length === 1 ? '' : 's'} · ${formatAttachmentSize(attachmentBytes)}`
+            : 'No files attached'}
+        </span>
         <span className="compose-save-state">Draft saved automatically</span>
         <button className="compose-send" onClick={send} disabled={sending}>{sending ? 'Sending…' : 'Send'}</button>
       </div>
