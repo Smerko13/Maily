@@ -4,7 +4,7 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
 import {
   LayoutDashboard, Inbox as InboxIcon, Sparkles, Truck, BarChart3, Settings,
-  LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen,
+  LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw,
 } from 'lucide-react';
 import './App.css';
 
@@ -962,9 +962,6 @@ function App() {
                 <>
                   <header className="tab-header">
                     <h1>Dashboard</h1>
-                    <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
-                      {loading ? 'Loading data...' : '🔄 Sync with Server'}
-                    </button>
                   </header>
 
                   <div className="tab-body">
@@ -1184,9 +1181,6 @@ function App() {
                 <>
                   <header className="tab-header">
                     <h1>Overview</h1>
-                    <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
-                      {loading ? 'Loading data...' : '🔄 Sync with Server'}
-                    </button>
                   </header>
 
                   {/* Account filter tabs — only visible when 2+ accounts are connected */}
@@ -1902,6 +1896,18 @@ function App() {
               </div>
             ))}
           </div>
+
+          {/* Global sync action — one persistent button instead of a per-tab header button */}
+          <button
+            onClick={fetchFromBackend}
+            disabled={loading}
+            className="btn-sync-fab"
+            aria-label="Sync with server"
+            title="Sync with server"
+          >
+            <RefreshCw size={18} strokeWidth={2.25} className={loading ? 'btn-sync-fab-spin' : ''} />
+            <span>{loading ? 'Syncing…' : 'Sync with Server'}</span>
+          </button>
         </div>
   );
 
