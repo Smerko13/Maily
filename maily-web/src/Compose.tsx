@@ -89,6 +89,7 @@ export default function Compose({ accounts, contacts, signature, seed, onSent, o
   const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const bodyInputRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedAccount = accounts.find(account => account.email === senderEmail) || initialAccount;
   const attachmentBytes = attachments.reduce((total, file) => total + file.size, 0);
@@ -97,6 +98,13 @@ export default function Compose({ accounts, contacts, signature, seed, onSent, o
     const draft: SavedDraft = { senderEmail, to, cc, bcc, subject, body, replyTo };
     localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
   }, [senderEmail, to, cc, bcc, subject, body, replyTo]);
+
+  useEffect(() => {
+    const bodyInput = bodyInputRef.current;
+    if (!bodyInput) return;
+    bodyInput.style.height = 'auto';
+    bodyInput.style.height = `${bodyInput.scrollHeight}px`;
+  }, [body]);
 
   const addAttachments = (files: FileList | null) => {
     if (!files) return;
@@ -200,58 +208,60 @@ export default function Compose({ accounts, contacts, signature, seed, onSent, o
 
   return (
     <div className="compose-shell">
-      <div className="compose-header">
-        <div>
-          <span className="compose-kicker">{seed?.mode && seed.mode !== 'new' ? seed.mode : 'New message'}</span>
-          <h1>{seed?.mode === 'replyAll' ? 'Reply all' : seed?.mode === 'forward' ? 'Forward' : seed?.mode === 'reply' ? 'Reply' : 'Compose'}</h1>
-        </div>
-        <button className="compose-close" onClick={onCancel} aria-label="Close compose">×</button>
-      </div>
-
-      <div className="compose-fields">
-        <label>
-          <span>From</span>
-          <select value={senderEmail} onChange={event => setSenderEmail(event.target.value)}>
-            {accounts.map(account => <option key={`${account.provider}-${account.email}`} value={account.email}>{account.email} · {account.provider}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>To</span>
-          <input value={to} onChange={event => setTo(event.target.value)} list="compose-contacts" placeholder="name@example.com" />
-        </label>
-        <datalist id="compose-contacts">{contacts.map(contact => <option value={contact} key={contact} />)}</datalist>
-
-        <div className="compose-field-actions">
-          <button onClick={() => setShowCopyFields(value => !value)}>Cc/Bcc</button>
-          <button onClick={() => setShowReplyTo(value => !value)}>Reply-To</button>
+      <div className="compose-scroll-region">
+        <div className="compose-header">
+          <div>
+            <span className="compose-kicker">{seed?.mode && seed.mode !== 'new' ? seed.mode : 'New message'}</span>
+            <h1>{seed?.mode === 'replyAll' ? 'Reply all' : seed?.mode === 'forward' ? 'Forward' : seed?.mode === 'reply' ? 'Reply' : 'Compose'}</h1>
+          </div>
+          <button className="compose-close" onClick={onCancel} aria-label="Close compose">×</button>
         </div>
 
-        {showCopyFields && (
-          <div className="compose-copy-grid">
-            <label><span>Cc</span><input value={cc} onChange={event => setCc(event.target.value)} list="compose-contacts" /></label>
-            <label><span>Bcc</span><input value={bcc} onChange={event => setBcc(event.target.value)} list="compose-contacts" /></label>
+        <div className="compose-fields">
+          <label>
+            <span>From</span>
+            <select value={senderEmail} onChange={event => setSenderEmail(event.target.value)}>
+              {accounts.map(account => <option key={`${account.provider}-${account.email}`} value={account.email}>{account.email} · {account.provider}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>To</span>
+            <input value={to} onChange={event => setTo(event.target.value)} list="compose-contacts" placeholder="name@example.com" />
+          </label>
+          <datalist id="compose-contacts">{contacts.map(contact => <option value={contact} key={contact} />)}</datalist>
+
+          <div className="compose-field-actions">
+            <button onClick={() => setShowCopyFields(value => !value)}>Cc/Bcc</button>
+            <button onClick={() => setShowReplyTo(value => !value)}>Reply-To</button>
+          </div>
+
+          {showCopyFields && (
+            <div className="compose-copy-grid">
+              <label><span>Cc</span><input value={cc} onChange={event => setCc(event.target.value)} list="compose-contacts" /></label>
+              <label><span>Bcc</span><input value={bcc} onChange={event => setBcc(event.target.value)} list="compose-contacts" /></label>
+            </div>
+          )}
+          {showReplyTo && <label><span>Reply-To</span><input value={replyTo} onChange={event => setReplyTo(event.target.value)} placeholder="replies@example.com" /></label>}
+          <label><span>Subject</span><input value={subject} onChange={event => setSubject(event.target.value)} placeholder="Subject" /></label>
+        </div>
+
+        <div className="compose-ai-row">
+          <input value={aiPrompt} onChange={event => setAiPrompt(event.target.value)} placeholder={seed?.draftContext ? 'Optional: give the AI extra reply instructions' : 'Ask AI to draft this email'} />
+          <button onClick={generateDraft} disabled={drafting}>{drafting ? 'Drafting…' : 'Draft with AI'}</button>
+        </div>
+
+        <textarea ref={bodyInputRef} className="compose-body" value={body} onChange={event => setBody(event.target.value)} placeholder="Write your message…" />
+        {signature && <p className="compose-signature-note">Your saved signature will be appended when this message is sent.</p>}
+
+        {attachments.length > 0 && (
+          <div className="compose-attachments">
+            {attachments.map((file, index) => (
+              <span key={`${file.name}-${index}`}>{file.name}<button onClick={() => setAttachments(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}>×</button></span>
+            ))}
           </div>
         )}
-        {showReplyTo && <label><span>Reply-To</span><input value={replyTo} onChange={event => setReplyTo(event.target.value)} placeholder="replies@example.com" /></label>}
-        <label><span>Subject</span><input value={subject} onChange={event => setSubject(event.target.value)} placeholder="Subject" /></label>
+        {error && <div className="compose-error">{error}</div>}
       </div>
-
-      <div className="compose-ai-row">
-        <input value={aiPrompt} onChange={event => setAiPrompt(event.target.value)} placeholder={seed?.draftContext ? 'Optional: give the AI extra reply instructions' : 'Ask AI to draft this email'} />
-        <button onClick={generateDraft} disabled={drafting}>{drafting ? 'Drafting…' : 'Draft with AI'}</button>
-      </div>
-
-      <textarea className="compose-body" value={body} onChange={event => setBody(event.target.value)} placeholder="Write your message…" />
-      {signature && <p className="compose-signature-note">Your saved signature will be appended when this message is sent.</p>}
-
-      {attachments.length > 0 && (
-        <div className="compose-attachments">
-          {attachments.map((file, index) => (
-            <span key={`${file.name}-${index}`}>{file.name}<button onClick={() => setAttachments(current => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={`Remove ${file.name}`}>×</button></span>
-          ))}
-        </div>
-      )}
-      {error && <div className="compose-error">{error}</div>}
 
       <div className="compose-footer">
         <button type="button" className="compose-attach" onClick={() => fileInputRef.current?.click()}>

@@ -1394,6 +1394,14 @@
   overflow: hidden;
 }
 
+.compose-scroll-region {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .compose-header {
   display: flex;
   align-items: center;
@@ -1520,9 +1528,9 @@
 
 .compose-body {
   width: 100%;
-  flex: 1;
   min-height: 180px;
-  resize: vertical;
+  overflow: hidden;
+  resize: none;
   border: 0;
   outline: 0;
   padding: 24px;
@@ -1544,7 +1552,6 @@
 }
 
 .compose-attachments {
-  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1586,8 +1593,7 @@
 }
 
 .compose-footer {
-  position: sticky;
-  bottom: 0;
+  flex-shrink: 0;
   z-index: 2;
   display: flex;
   align-items: center;
