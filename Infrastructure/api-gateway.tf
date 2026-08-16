@@ -1,6 +1,6 @@
 resource "aws_apigatewayv2_api" "maily_http_api" {
-  name        = "Maily-Backend-API"
-  description = "API Gateway for Maily Backend"
+  name          = "Maily-Backend-API"
+  description   = "API Gateway for Maily Backend"
   protocol_type = "HTTP"
 
   // CORS controls which frontend origins and HTTP methods are allowed to call this API from a browser
@@ -11,16 +11,16 @@ resource "aws_apigatewayv2_api" "maily_http_api" {
   }
 
   tags = {
-      Project     = "Maily"
-      Environment = "Development"
+    Project     = "Maily"
+    Environment = "Development"
   }
 }
 
 resource "aws_apigatewayv2_integration" "backend_lambda_integration" {
-  api_id = aws_apigatewayv2_api.maily_http_api.id
-  integration_type = "AWS_PROXY"
+  api_id             = aws_apigatewayv2_api.maily_http_api.id
+  integration_type   = "AWS_PROXY"
   integration_method = "POST"
-  integration_uri = aws_lambda_function.maily_backend_lambda.invoke_arn
+  integration_uri    = aws_lambda_function.maily_backend_lambda.invoke_arn
 }
 
 resource "aws_apigatewayv2_integration" "google_auth_integration" {
@@ -56,188 +56,197 @@ resource "aws_apigatewayv2_route" "outlook_auth_route" {
 }
 
 resource "aws_apigatewayv2_route" "hello_route" {
-    api_id = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /hello"
-    target = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /hello"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "sync_route" {
-    api_id = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /sync"
-    target = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /sync"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "stats_route" {
-    api_id = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /stats"
-    target = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /stats"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "draft_route" {
-    api_id = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /draft"
-    target = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /draft"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "send_route" {
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /send"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "export_route" {
-    api_id = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /export"
-    target = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /export"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "accounts_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /accounts"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /accounts"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "disconnect_account_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "DELETE /auth/account"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "DELETE /auth/account"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "email_body_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /email-body"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /email-body"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "attachment_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /attachment"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /attachment"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "thread_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /thread"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /thread"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "summarize_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /summarize"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /summarize"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "settings_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /settings"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /settings"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "mark_read_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /mark-read"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /mark-read"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "labels_get_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /labels"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /labels"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "labels_create_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "POST /labels"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "POST /labels"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "labels_update_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "PUT /labels"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "PUT /labels"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "labels_delete_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "DELETE /labels"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "DELETE /labels"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "smart_categories_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /smart-categories"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /smart-categories"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_route" "smart_category_route" {
-    api_id    = aws_apigatewayv2_api.maily_http_api.id
-    route_key = "GET /smart-category"
-    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /smart-category"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
-    authorization_type = "JWT"
-    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
 resource "aws_apigatewayv2_stage" "default_stage" {
-    api_id = aws_apigatewayv2_api.maily_http_api.id
-    name = "$default"
-    auto_deploy = true
+  api_id      = aws_apigatewayv2_api.maily_http_api.id
+  name        = "$default"
+  auto_deploy = true
 }
 
 resource "aws_lambda_permission" "api_gw_lambda_permission" {
-    statement_id = "AllowExecutionFromAPIGateway"
-    action = "lambda:InvokeFunction"
-    function_name = aws_lambda_function.maily_backend_lambda.function_name
-    principal = "apigateway.amazonaws.com"
-    source_arn = "${aws_apigatewayv2_api.maily_http_api.execution_arn}/*/*"
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.maily_backend_lambda.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.maily_http_api.execution_arn}/*/*"
 }
 
 resource "aws_lambda_permission" "api_gw_google_auth_permission" {
@@ -257,9 +266,9 @@ resource "aws_lambda_permission" "api_gw_outlook_auth_permission" {
 }
 
 resource "aws_apigatewayv2_authorizer" "cognito_auth" {
-  api_id = aws_apigatewayv2_api.maily_http_api.id
-  name = "cognito-authorizer"
-  authorizer_type = "JWT"
+  api_id           = aws_apigatewayv2_api.maily_http_api.id
+  name             = "cognito-authorizer"
+  authorizer_type  = "JWT"
   identity_sources = ["$request.header.Authorization"]
 
   jwt_configuration {

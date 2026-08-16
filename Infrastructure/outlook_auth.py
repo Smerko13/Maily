@@ -60,7 +60,7 @@ def lambda_handler(event, context):
             'client_secret': client_secret,
             'redirect_uri': redirect_uri,
             'grant_type': 'authorization_code',
-            'scope': 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read'
+            'scope': 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send'
         }).encode('utf-8')
 
         req = urllib.request.Request(url, data=data, method='POST')
@@ -131,13 +131,12 @@ def lambda_handler(event, context):
         return {
             "statusCode": e.code,
             "body": json.dumps({
-                "error": "Microsoft authentication failed",
-                "details": error_body
+                "error": "Microsoft authentication failed"
             })
         }
     except Exception as e:
         print(f"General Error: {str(e)}")
         return {
             "statusCode": 500,
-            "body": json.dumps({"error": "Internal server error", "details": str(e)})
+            "body": json.dumps({"error": "Internal server error"})
         }

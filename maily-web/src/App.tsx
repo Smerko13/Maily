@@ -4,9 +4,10 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
 import {
   LayoutDashboard, Inbox as InboxIcon, Sparkles, Truck, BarChart3, Settings,
-  LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw,
+  LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, SquarePen,
 } from 'lucide-react';
 import './App.css';
+import Compose, { type ComposeSeed } from './Compose';
 
 interface Attachment {
   id: string;
@@ -21,6 +22,9 @@ interface Email {
   emailId?: string;
   subject: string;
   from?: string;
+  fromAddress?: string;
+  to?: string[];
+  cc?: string[];
   content: string;
   summary?: string;
   status?: string;
@@ -29,6 +33,7 @@ interface Email {
   attachments?: Attachment[];
   threadId?: string;
   inReplyTo?: string;
+  messageId?: string;
   receivedAt?: string;
   bodyText?: string | null;
   bodyHtml?: string | null;
@@ -154,7 +159,7 @@ const THEMES: { id: ThemeId; label: string }[] = [
 function App() {
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'settings' | 'stats' | 'drafting' | 'categories'>('dashboard'); // which tab is visible
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'compose' | 'settings' | 'stats' | 'drafting' | 'categories'>('dashboard'); // which tab is visible
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -174,6 +179,10 @@ function App() {
   );
   const [fetchLimitSaving, setFetchLimitSaving] = useState<boolean>(false);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
+  const [signature, setSignature] = useState<string>('');
+  const [signatureSaving, setSignatureSaving] = useState<boolean>(false);
+  const [composeSeed, setComposeSeed] = useState<ComposeSeed | undefined>();
+  const [composeKey, setComposeKey] = useState<number>(0);
   const [accountFilter, setAccountFilter] = useState<string>('all');
   const [theme, setTheme] = useState<ThemeId>(() => {
     const stored = localStorage.getItem('mailyTheme') as ThemeId | null;
@@ -237,6 +246,10 @@ function App() {
       if (!response.ok) return;
       const data = await response.json();
       setConnectedAccounts(data.accounts || []);
+      if (data.settings) {
+        setSignature(data.settings.signature || '');
+        if (data.settings.email_fetch_limit) setFetchLimit(data.settings.email_fetch_limit);
+      }
     } catch {
       // silently fail
     }
@@ -272,6 +285,8 @@ function App() {
     loadConnectedAccounts();
     loadLabels();
     fetchFromBackend();
+    // This effect is intentionally mount-only; the ref prevents StrictMode from starting two syncs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle the redirect back from Microsoft after the user approves (or cancels) Outlook access.
@@ -326,6 +341,8 @@ function App() {
     };
 
     handleOutlookCallback();
+    // OAuth codes are single-use, so this callback must only be processed once after the redirect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-load emails from DynamoDB on page load and whenever the account filter changes
@@ -356,7 +373,7 @@ function App() {
   // Google login handler — works for both first account and adding more
  const loginWithGoogle = useGoogleLogin({
     flow: 'auth-code',
-    scope: 'https://www.googleapis.com/auth/gmail.readonly',
+   scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send',
     onSuccess: async (codeResponse) => {
       console.log("Success! Auth Code from Google:", codeResponse.code);
       showToast('Connecting to Google...', 'info');
@@ -416,7 +433,7 @@ function App() {
       response_type: 'code',
       redirect_uri: redirectUri,
       response_mode: 'query',
-      scope: 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read',
+      scope: 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send',
       state,
       prompt: 'consent'
     });
@@ -497,6 +514,7 @@ function App() {
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       setDraft(data.draft);
+      openComposeFromEmail('reply', email, data.draft);
     } catch (error) {
       console.error('Error generating draft:', error);
       setDraft('❌ Failed to generate draft. Please try again.');
@@ -712,6 +730,27 @@ function App() {
     }
   };
 
+  const saveSignature = async () => {
+    setSignatureSaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/settings`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signature }),
+      });
+      if (!response.ok) throw new Error('Failed to save signature');
+      showToast('Signature saved.', 'success');
+    } catch (error) {
+      console.error('Error saving signature:', error);
+      showToast('Failed to save signature.', 'error');
+    } finally {
+      setSignatureSaving(false);
+    }
+  };
+
   // Create a new custom label
   const createLabel = async () => {
     if (!newLabelName.trim() || !newLabelDescription.trim()) {
@@ -849,7 +888,7 @@ function App() {
     try {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
-      if (!token) throw new Error('No auth token available');
+      if (!token) return;
 
       const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/sync`;
       const response = await fetch(apiUrl, {
@@ -871,6 +910,61 @@ function App() {
       setLoading(false);
     }
   };
+
+  const addressFromEmail = (email: Email): string => {
+    if (email.fromAddress) return email.fromAddress;
+    const match = email.from?.match(/<([^>]+)>/) || email.from?.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+    return match?.[1] || match?.[0] || '';
+  };
+
+  const openCompose = () => {
+    setComposeSeed({ mode: 'new' });
+    setComposeKey(value => value + 1);
+    setActiveTab('compose');
+  };
+
+  const openComposeFromEmail = (mode: 'reply' | 'replyAll' | 'forward', email: Email, generatedBody = '') => {
+    const sender = addressFromEmail(email);
+    const ownAddresses = new Set(connectedAccounts.map(account => account.email.toLowerCase()));
+    const originalRecipients = [...(email.to || []), ...(email.cc || [])]
+      .filter(address => !ownAddresses.has(address.toLowerCase()));
+    const to = mode === 'forward' ? [] : [sender].filter(Boolean);
+    const cc = mode === 'replyAll'
+      ? [...new Set(originalRecipients.filter(address => address.toLowerCase() !== sender.toLowerCase()))]
+      : [];
+    const prefix = mode === 'forward' ? 'Fwd:' : 'Re:';
+    const prefixedSubject = email.subject.toLowerCase().startsWith(prefix.toLowerCase())
+      ? email.subject
+      : `${prefix} ${email.subject}`;
+    const loadedBody = email.emailId ? emailBodies[email.emailId]?.text : null;
+    const originalText = loadedBody || email.bodyText || email.content || '';
+    const quote = originalText
+      ? `\n\nOn ${email.receivedAt ? new Date(email.receivedAt).toLocaleString() : 'an earlier message'}, ${email.from || sender} wrote:\n${originalText.split('\n').map(line => `> ${line}`).join('\n')}`
+      : '';
+
+    setComposeSeed({
+      mode,
+      senderEmail: email.providerEmail,
+      provider: email.provider,
+      to,
+      cc,
+      subject: prefixedSubject,
+      body: `${generatedBody}${quote}`,
+      threadId: email.threadId,
+      inReplyTo: email.messageId || email.inReplyTo,
+      originalMessageId: email.emailId?.split('#', 3)[2],
+      draftContext: { subject: email.subject, summary: email.summary, content: email.content },
+    });
+    setComposeKey(value => value + 1);
+    setActiveTab('compose');
+  };
+
+  const composeContacts = [...new Set(emails.flatMap(email => [
+    addressFromEmail(email),
+    ...(email.to || []),
+    ...(email.cc || []),
+  ]).filter(address => address && !connectedAccounts.some(account => account.email.toLowerCase() === address.toLowerCase())))]
+    .sort((left, right) => left.localeCompare(right));
 
   //The UI / JSX
   const renderApp = ({ signOut, user }: { signOut?: (data?: any) => void; user?: any }) => (
@@ -911,6 +1005,9 @@ function App() {
               </div>
               <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><InboxIcon size={17} strokeWidth={2} /></span>Inbox
+              </div>
+              <div onClick={openCompose} className={`nav-item compose-nav-item ${activeTab === 'compose' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><SquarePen size={17} strokeWidth={2} /></span>Compose
               </div>
               <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><Sparkles size={17} strokeWidth={2} /></span>Smart Drafting
@@ -1080,6 +1177,35 @@ function App() {
               );
             })()}
 
+            {activeTab === 'compose' && (
+              <>
+                <header className="tab-header">
+                  <h1>
+                    {composeSeed?.mode === 'replyAll' ? 'Reply all'
+                      : composeSeed?.mode === 'forward' ? 'Forward'
+                      : composeSeed?.mode === 'reply' ? 'Reply'
+                      : 'Compose'}
+                  </h1>
+                  <button onClick={() => setActiveTab('inbox')} className="btn-sync">Back to Inbox</button>
+                </header>
+                <div className="tab-body">
+                  <Compose
+                    key={composeKey}
+                    accounts={connectedAccounts}
+                    contacts={composeContacts}
+                    signature={signature}
+                    seed={composeSeed}
+                    onCancel={() => setActiveTab('inbox')}
+                    onSent={() => {
+                      showToast('Email sent.', 'success');
+                      setComposeSeed(undefined);
+                      setActiveTab('inbox');
+                    }}
+                  />
+                </div>
+              </>
+            )}
+
             {/* Inbox Tab */}
             {activeTab === 'inbox' && (
               openedEmail ? (
@@ -1138,7 +1264,10 @@ function App() {
                                               key={att.id}
                                               className="attachment-chip"
                                               disabled={attachmentLoadingId === att.id}
-                                              onClick={e => { e.stopPropagation(); msg.emailId && downloadAttachment(msg.emailId, att); }}
+                                              onClick={e => {
+                                                e.stopPropagation();
+                                                if (msg.emailId) downloadAttachment(msg.emailId, att);
+                                              }}
                                             >
                                               📎 {att.filename} ({formatFileSize(att.size)})
                                               {attachmentLoadingId === att.id ? ' ⏳' : ''}
@@ -1166,6 +1295,11 @@ function App() {
                                         }
                                         return bodyData ? <p className="email-body-text">(This email has no readable body content.)</p> : null;
                                       })()}
+                                      <div className="message-actions">
+                                        <button onClick={() => openComposeFromEmail('reply', msg)}>Reply</button>
+                                        <button onClick={() => openComposeFromEmail('replyAll', msg)}>Reply all</button>
+                                        <button onClick={() => openComposeFromEmail('forward', msg)}>Forward</button>
+                                      </div>
                                     </div>
                                   )}
                                 </div>
@@ -1322,7 +1456,10 @@ function App() {
                                       key={att.id}
                                       className="attachment-chip"
                                       disabled={attachmentLoadingId === att.id}
-                                      onClick={e => { e.stopPropagation(); email.emailId && downloadAttachment(email.emailId, att); }}
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        if (email.emailId) downloadAttachment(email.emailId, att);
+                                      }}
                                     >
                                       📎 {att.filename} ({formatFileSize(att.size)})
                                       {attachmentLoadingId === att.id ? ' ⏳' : ''}
@@ -1746,6 +1883,25 @@ function App() {
 
                   {/* Manage labels */}
                   <div className="settings-card" style={{ marginBottom: '20px' }}>
+                    <h3>Signature</h3>
+                    <p>This plain-text signature is appended automatically when you send an email.</p>
+                    <textarea
+                      className="settings-signature"
+                      value={signature}
+                      maxLength={2000}
+                      onChange={event => setSignature(event.target.value)}
+                      placeholder={'Best,\nYour name'}
+                    />
+                    <div className="settings-signature-actions">
+                      <span>{signature.length}/2000</span>
+                      <button className="btn-sync" onClick={saveSignature} disabled={signatureSaving}>
+                        {signatureSaving ? 'Saving...' : 'Save signature'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Manage labels */}
+                  <div className="settings-card" style={{ marginBottom: '20px' }}>
                     <h3>🏷️ Manage Labels</h3>
                     <p>
                       Labels are assigned automatically by AI based on each label's description. Presets are built into Maily; you can also create your own.
@@ -1897,17 +2053,20 @@ function App() {
             ))}
           </div>
 
-          {/* Global sync action — one persistent button instead of a per-tab header button */}
-          <button
-            onClick={fetchFromBackend}
-            disabled={loading}
-            className="btn-sync-fab"
-            aria-label="Sync with server"
-            title="Sync with server"
-          >
-            <RefreshCw size={18} strokeWidth={2.25} className={loading ? 'btn-sync-fab-spin' : ''} />
-            <span>{loading ? 'Syncing…' : 'Sync with Server'}</span>
-          </button>
+          {/* Global sync action — one persistent button instead of a per-tab header button.
+              Hidden on Compose, which has its own footer action bar in that same corner. */}
+          {activeTab !== 'compose' && (
+            <button
+              onClick={fetchFromBackend}
+              disabled={loading}
+              className="btn-sync-fab"
+              aria-label="Sync with server"
+              title="Sync with server"
+            >
+              <RefreshCw size={18} strokeWidth={2.25} className={loading ? 'btn-sync-fab-spin' : ''} />
+              <span>{loading ? 'Syncing…' : 'Sync with Server'}</span>
+            </button>
+          )}
         </div>
   );
 

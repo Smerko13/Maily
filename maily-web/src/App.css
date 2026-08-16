@@ -2003,3 +2003,332 @@
   color: var(--text-secondary) !important;
 }
 
+/* Compose — a plain .email-card like every other tab, not a bespoke shell */
+.compose-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.compose-fields {
+  padding: 4px 0 0;
+}
+
+.compose-fields label,
+.compose-copy-grid label {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  transition: border-color 0.18s var(--ease-spring);
+}
+
+.compose-fields label:focus-within,
+.compose-copy-grid label:focus-within {
+  border-bottom-color: var(--accent);
+}
+
+.compose-fields label > span,
+.compose-copy-grid label > span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.compose-fields input,
+.compose-fields select,
+.compose-copy-grid input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  padding: 12px 0;
+}
+
+.compose-field-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 7px 0;
+}
+
+.compose-field-actions button,
+.message-actions button {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.18s var(--ease-spring);
+}
+
+.compose-field-actions button:hover,
+.message-actions button:hover {
+  background: var(--surface-raised);
+}
+
+.compose-copy-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.compose-ai-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 14px;
+  margin: 16px 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  border: 1px solid var(--border);
+}
+
+.compose-ai-row input {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  transition: border-color 0.18s var(--ease-spring), box-shadow 0.18s var(--ease-spring);
+}
+
+.compose-ai-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.compose-ai-row button,
+.compose-send {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 10px 18px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-light));
+  color: white;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.22s var(--ease-spring);
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.compose-ai-row button:hover:not(:disabled),
+.compose-send:hover:not(:disabled) {
+  transform: translateY(-1px) scale(1.015);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.18), 0 8px 32px -8px rgba(var(--accent-rgb), 0.5);
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
+}
+
+.compose-ai-row button:disabled,
+.compose-send:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.compose-body {
+  width: 100%;
+  min-height: 180px;
+  overflow: hidden;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  padding: 16px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 1.65;
+  transition: border-color 0.18s var(--ease-spring), box-shadow 0.18s var(--ease-spring);
+}
+
+.compose-body:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.compose-signature-note,
+.compose-save-state {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.compose-signature-note {
+  margin: 0;
+  padding: 10px 0 0;
+}
+
+.compose-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 112px;
+  overflow-y: auto;
+  padding: 12px 0 0;
+}
+
+.compose-attachments > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 240px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compose-attachments button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  transition: color 0.18s var(--ease-spring);
+}
+
+.compose-attachments button:hover {
+  color: #f87171;
+}
+
+.compose-error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid #dc2626;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.86rem;
+}
+
+[data-theme="midnight"] .compose-error {
+  background-color: #1f0a0a;
+  color: #f87171;
+  border-left-color: #f87171;
+}
+
+.compose-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 60px;
+  margin-top: 16px;
+  padding: 16px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.compose-attach {
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-left: -12px;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 750;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.18s var(--ease-spring);
+}
+
+.compose-attach:hover {
+  background: var(--surface);
+}
+
+.compose-file-input {
+  display: none;
+}
+
+.compose-attachment-status {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.compose-save-state {
+  margin-left: auto;
+}
+
+.compose-empty {
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.message-actions {
+  display: flex;
+  gap: 14px;
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-signature {
+  width: 100%;
+  min-height: 120px;
+  margin-top: 12px;
+  padding: 12px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  transition: border-color 0.18s var(--ease-spring), box-shadow 0.18s var(--ease-spring);
+}
+
+.settings-signature:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.settings-signature-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  .compose-copy-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .compose-ai-row {
+    grid-template-columns: 1fr;
+  }
+
+  .compose-footer {
+    flex-wrap: wrap;
+  }
+
+  .compose-save-state {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .compose-attachment-status {
+    margin-right: auto;
+  }
+
+  .compose-send {
+    margin-left: auto;
+  }
+}
+
