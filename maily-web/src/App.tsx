@@ -3,7 +3,12 @@ import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
 import CategoryWizard from './components/CategoryWizard';
+import {
+  LayoutDashboard, Inbox as InboxIcon, Sparkles, Truck, BarChart3, Settings,
+  LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, SquarePen,
+} from 'lucide-react';
 import './App.css';
+import Compose, { type ComposeSeed } from './Compose';
 
 interface Attachment {
   id: string;
@@ -18,6 +23,9 @@ export interface Email {
   emailId?: string;
   subject: string;
   from?: string;
+  fromAddress?: string;
+  to?: string[];
+  cc?: string[];
   content: string;
   summary?: string;
   status?: string;
@@ -26,6 +34,7 @@ export interface Email {
   attachments?: Attachment[];
   threadId?: string;
   inReplyTo?: string;
+  messageId?: string;
   receivedAt?: string;
   bodyText?: string | null;
   bodyHtml?: string | null;
@@ -173,14 +182,24 @@ interface Toast { id: number; text: string; type: 'success' | 'error' | 'info'; 
 
 type ThemeId = 'indigo' | 'ocean' | 'rose' | 'emerald' | 'midnight';
 
+type DraftTone = 'formal' | 'friendly' | 'brief';
+
+const DRAFT_TONES: { id: DraftTone; label: string }[] = [
+  { id: 'formal',   label: 'Formal' },
+  { id: 'friendly', label: 'Friendly' },
+  { id: 'brief',    label: 'Brief' },
+];
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// id 'indigo' is a historical key (data-theme="indigo" in App.css, localStorage values) — its
+// actual accent color is teal now, hence the label mismatch here.
 const THEMES: { id: ThemeId; label: string }[] = [
-  { id: 'indigo',   label: 'Indigo'   },
+  { id: 'indigo',   label: 'Teal'     },
   { id: 'ocean',    label: 'Ocean'    },
   { id: 'rose',     label: 'Rose'     },
   { id: 'emerald',  label: 'Emerald'  },
@@ -190,7 +209,7 @@ const THEMES: { id: ThemeId; label: string }[] = [
 function App() {
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'inbox' | 'settings' | 'stats' | 'drafting' | 'categories'>('inbox'); // which tab is visible
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'compose' | 'settings' | 'stats' | 'drafting' | 'categories'>('dashboard'); // which tab is visible
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -202,6 +221,7 @@ function App() {
   const [selectedEmailIndex, setSelectedEmailIndex] = useState<number | null>(null); // index of the email selected for drafting
   const [draft, setDraft] = useState<string>(''); // the AI-generated reply draft
   const [draftLoading, setDraftLoading] = useState<boolean>(false);
+  const [draftTone, setDraftTone] = useState<DraftTone>('formal');
   const [exportLoading, setExportLoading] = useState<boolean>(false);
   const [exportUrl, setExportUrl] = useState<string>('');
   const [fetchLimit, setFetchLimit] = useState<number>(
@@ -209,10 +229,29 @@ function App() {
   );
   const [fetchLimitSaving, setFetchLimitSaving] = useState<boolean>(false);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
+  const [signature, setSignature] = useState<string>('');
+  const [signatureSaving, setSignatureSaving] = useState<boolean>(false);
+  const [composeSeed, setComposeSeed] = useState<ComposeSeed | undefined>();
+  const [composeKey, setComposeKey] = useState<number>(0);
   const [accountFilter, setAccountFilter] = useState<string>('all');
-  const [theme, setTheme] = useState<ThemeId>(
-    () => (localStorage.getItem('mailyTheme') as ThemeId) ?? 'indigo'
-  );
+  const [theme, setTheme] = useState<ThemeId>(() => {
+    const stored = localStorage.getItem('mailyTheme') as ThemeId | null;
+    if (stored) return stored;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'indigo';
+  });
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+
+  // Quick light/dark toggle, layered on top of the 5-theme picker: 'midnight' is already a full dark
+  // palette, so toggling just swaps to/from it and remembers whichever light theme you were on before.
+  const toggleDarkMode = () => {
+    if (theme === 'midnight') {
+      const lastLight = (localStorage.getItem('mailyLastLightTheme') as ThemeId) || 'indigo';
+      setTheme(lastLight);
+    } else {
+      localStorage.setItem('mailyLastLightTheme', theme);
+      setTheme('midnight');
+    }
+  };
   const [expandedEmailId, setExpandedEmailId] = useState<string | null>(null);
   const [emailBodies, setEmailBodies] = useState<Record<string, EmailBody>>({});
   const [bodyLoadingId, setBodyLoadingId] = useState<string | null>(null);
@@ -221,14 +260,15 @@ function App() {
   const [threadLoadingId, setThreadLoadingId] = useState<string | null>(null);
   const [openedEmail, setOpenedEmail] = useState<Email | null>(null); // set = showing the detail view instead of the inbox list
 
+  const [inboxSearch, setInboxSearch] = useState<string>('');
   const [labels, setLabels] = useState<LabelDef[]>([]);
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [labelSaving, setLabelSaving] = useState<boolean>(false);
   const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
-  const [editLabelDraft, setEditLabelDraft] = useState<{ name: string; description: string; color: string }>({ name: '', description: '', color: '#6366f1' });
+  const [editLabelDraft, setEditLabelDraft] = useState<{ name: string; description: string; color: string }>({ name: '', description: '', color: '#0d9488' });
   const [newLabelName, setNewLabelName] = useState<string>('');
   const [newLabelDescription, setNewLabelDescription] = useState<string>('');
-  const [newLabelColor, setNewLabelColor] = useState<string>('#6366f1');
+  const [newLabelColor, setNewLabelColor] = useState<string>('#0d9488');
 
   const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
   const [categoryItemsLoading, setCategoryItemsLoading] = useState<boolean>(false);
@@ -267,6 +307,10 @@ function App() {
       if (!response.ok) return;
       const data = await response.json();
       setConnectedAccounts(data.accounts || []);
+      if (data.settings) {
+        setSignature(data.settings.signature || '');
+        if (data.settings.email_fetch_limit) setFetchLimit(data.settings.email_fetch_limit);
+      }
     } catch {
       // silently fail
     }
@@ -324,6 +368,8 @@ function App() {
     loadLabels();
     loadCategoryTypeCatalog();
     fetchFromBackend();
+    // This effect is intentionally mount-only; the ref prevents StrictMode from starting two syncs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle the redirect back from Microsoft after the user approves (or cancels) Outlook access.
@@ -378,6 +424,8 @@ function App() {
     };
 
     handleOutlookCallback();
+    // OAuth codes are single-use, so this callback must only be processed once after the redirect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-load emails from DynamoDB on page load and whenever the account filter changes
@@ -408,7 +456,7 @@ function App() {
   // Google login handler — works for both first account and adding more
  const loginWithGoogle = useGoogleLogin({
     flow: 'auth-code',
-    scope: 'https://www.googleapis.com/auth/gmail.readonly',
+   scope: 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send',
     onSuccess: async (codeResponse) => {
       console.log("Success! Auth Code from Google:", codeResponse.code);
       showToast('Connecting to Google...', 'info');
@@ -468,7 +516,7 @@ function App() {
       response_type: 'code',
       redirect_uri: redirectUri,
       response_mode: 'query',
-      scope: 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read',
+      scope: 'openid profile email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send',
       state,
       prompt: 'consent'
     });
@@ -524,7 +572,7 @@ function App() {
   };
 
   // Generate a draft reply for the selected email
-  const fetchDraft = async (email: Email) => {
+  const fetchDraft = async (email: Email, tone: DraftTone) => {
     setDraftLoading(true);
     setDraft('');
     try {
@@ -542,12 +590,14 @@ function App() {
         body: JSON.stringify({
           subject: email.subject,
           summary: email.summary,
-          content: email.content
+          content: email.content,
+          tone
         })
       });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
       setDraft(data.draft);
+      openComposeFromEmail('reply', email, data.draft);
     } catch (error) {
       console.error('Error generating draft:', error);
       setDraft('❌ Failed to generate draft. Please try again.');
@@ -808,6 +858,27 @@ function App() {
     }
   };
 
+  const saveSignature = async () => {
+    setSignatureSaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/settings`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signature }),
+      });
+      if (!response.ok) throw new Error('Failed to save signature');
+      showToast('Signature saved.', 'success');
+    } catch (error) {
+      console.error('Error saving signature:', error);
+      showToast('Failed to save signature.', 'error');
+    } finally {
+      setSignatureSaving(false);
+    }
+  };
+
   // Create a new custom label
   const createLabel = async () => {
     if (!newLabelName.trim() || !newLabelDescription.trim()) {
@@ -828,7 +899,7 @@ function App() {
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       setNewLabelName('');
       setNewLabelDescription('');
-      setNewLabelColor('#6366f1');
+      setNewLabelColor('#0d9488');
       await loadLabels();
       showToast('Label created', 'success');
     } catch (error) {
@@ -993,7 +1064,7 @@ function App() {
     try {
       const session = await fetchAuthSession();
       const token = session.tokens?.idToken?.toString();
-      if (!token) throw new Error('No auth token available');
+      if (!token) return;
 
       const apiUrl = `${import.meta.env.VITE_API_BASE_URL}/sync`;
       const response = await fetch(apiUrl, {
@@ -1016,49 +1087,300 @@ function App() {
     }
   };
 
+  const addressFromEmail = (email: Email): string => {
+    if (email.fromAddress) return email.fromAddress;
+    const match = email.from?.match(/<([^>]+)>/) || email.from?.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+    return match?.[1] || match?.[0] || '';
+  };
+
+  const openCompose = () => {
+    setComposeSeed({ mode: 'new' });
+    setComposeKey(value => value + 1);
+    setActiveTab('compose');
+  };
+
+  const openComposeFromEmail = (mode: 'reply' | 'replyAll' | 'forward', email: Email, generatedBody = '') => {
+    const sender = addressFromEmail(email);
+    const ownAddresses = new Set(connectedAccounts.map(account => account.email.toLowerCase()));
+    const originalRecipients = [...(email.to || []), ...(email.cc || [])]
+      .filter(address => !ownAddresses.has(address.toLowerCase()));
+    const to = mode === 'forward' ? [] : [sender].filter(Boolean);
+    const cc = mode === 'replyAll'
+      ? [...new Set(originalRecipients.filter(address => address.toLowerCase() !== sender.toLowerCase()))]
+      : [];
+    const prefix = mode === 'forward' ? 'Fwd:' : 'Re:';
+    const prefixedSubject = email.subject.toLowerCase().startsWith(prefix.toLowerCase())
+      ? email.subject
+      : `${prefix} ${email.subject}`;
+    const loadedBody = email.emailId ? emailBodies[email.emailId]?.text : null;
+    const originalText = loadedBody || email.bodyText || email.content || '';
+    const quote = originalText
+      ? `\n\nOn ${email.receivedAt ? new Date(email.receivedAt).toLocaleString() : 'an earlier message'}, ${email.from || sender} wrote:\n${originalText.split('\n').map(line => `> ${line}`).join('\n')}`
+      : '';
+
+    setComposeSeed({
+      mode,
+      senderEmail: email.providerEmail,
+      provider: email.provider,
+      to,
+      cc,
+      subject: prefixedSubject,
+      body: `${generatedBody}${quote}`,
+      threadId: email.threadId,
+      inReplyTo: email.messageId || email.inReplyTo,
+      originalMessageId: email.emailId?.split('#', 3)[2],
+      draftContext: { subject: email.subject, summary: email.summary, content: email.content },
+    });
+    setComposeKey(value => value + 1);
+    setActiveTab('compose');
+  };
+
+  const composeContacts = [...new Set(emails.flatMap(email => [
+    addressFromEmail(email),
+    ...(email.to || []),
+    ...(email.cc || []),
+  ]).filter(address => address && !connectedAccounts.some(account => account.email.toLowerCase() === address.toLowerCase())))]
+    .sort((left, right) => left.localeCompare(right));
+
   //The UI / JSX
-  return (
-    <Authenticator loginMechanisms={['email']} components={{
-        Header() {
-          return (
-            <div style={{ textAlign: 'center', paddingTop: '32px', paddingBottom: '8px' }}>
-              <img src="/maily-logo.png" alt="Maily" style={{ width: '72px', height: '72px', borderRadius: '18px', objectFit: 'cover', boxShadow: '0 4px 16px rgba(0,0,0,0.12)' }} />
-              <p style={{ margin: '10px 0 0', fontWeight: 700, fontSize: '1.2em', color: '#0f172a', fontFamily: 'Inter, sans-serif' }}>Maily</p>
-              <p style={{ margin: '4px 0 0', fontSize: '0.78em', color: '#64748b', fontFamily: 'Inter, sans-serif', textTransform: 'uppercase', letterSpacing: '0.8px' }}>Smart Email Assistant</p>
-            </div>
-          );
-        }
-      }}>
-      {({ signOut, user }) => (
-        <div className="app-layout" data-theme={theme}>
+  const renderApp = ({ signOut, user }: { signOut?: (data?: any) => void; user?: any }) => (
+          <div className="app-layout" data-theme={theme}>
+
+          {/* Hamburger toggle — floats in place once the sidebar is collapsed */}
+          {!sidebarOpen && (
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="sidebar-hamburger-float"
+              aria-label="Open menu"
+              title="Open menu"
+            >
+              <PanelLeftOpen size={18} strokeWidth={2} />
+            </button>
+          )}
 
           {/* Sidebar */}
-          <div className="sidebar">
+          <div className={`sidebar ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
             <div className="sidebar-header">
-              <h2 className="sidebar-logo"><img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span></h2>
+              <h2 className="sidebar-logo">
+                <img src="/maily-logo.png" alt="Maily" className="sidebar-logo-img" /><span className="logo-text">Maily</span>
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="sidebar-hamburger"
+                  aria-label="Close menu"
+                  title="Close menu"
+                >
+                  <PanelLeftClose size={17} strokeWidth={2} />
+                </button>
+              </h2>
               <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
 
             <div className="sidebar-nav">
-              <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
-                📥 Inbox
+              <div onClick={() => setActiveTab('dashboard')} className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><LayoutDashboard size={17} strokeWidth={2} /></span>Dashboard
               </div>
-              <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>✨ Smart Drafting</div>
-              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>🚚 Smart Categories</div>
-              <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>📊 Statistics</div>
+              <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><InboxIcon size={17} strokeWidth={2} /></span>Inbox
+              </div>
+              <div onClick={openCompose} className={`nav-item compose-nav-item ${activeTab === 'compose' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><SquarePen size={17} strokeWidth={2} /></span>Compose
+              </div>
+              <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><Sparkles size={17} strokeWidth={2} /></span>Smart Drafting
+              </div>
+              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><Truck size={17} strokeWidth={2} /></span>Smart Categories
+              </div>
+              <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><BarChart3 size={17} strokeWidth={2} /></span>Statistics
+              </div>
               <div onClick={() => setActiveTab('settings')} className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
-                ⚙️ Settings
+                <span className="nav-item-icon"><Settings size={17} strokeWidth={2} /></span>Settings
               </div>
             </div>
 
             <div className="sidebar-footer">
-              <p className="sidebar-user">Logged in as:<br/><strong>{user?.signInDetails?.loginId || user?.username}</strong></p>
-              <button onClick={signOut} className="btn-logout">Log Out</button>
+              <div className="sidebar-profile">
+                <div className="sidebar-avatar">{(user?.signInDetails?.loginId || user?.username || '?').charAt(0).toUpperCase()}</div>
+                <div className="sidebar-profile-info">
+                  <span className="sidebar-profile-label">Signed in as</span>
+                  <strong className="sidebar-profile-email" title={user?.signInDetails?.loginId || user?.username}>{user?.signInDetails?.loginId || user?.username}</strong>
+                </div>
+              </div>
+              <div className="sidebar-footer-actions">
+                <button onClick={signOut} className="btn-logout">
+                  <LogOut size={14} strokeWidth={2} />Log Out
+                </button>
+                <button
+                  onClick={toggleDarkMode}
+                  className="btn-theme-toggle"
+                  aria-label={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
+                  title={theme === 'midnight' ? 'Switch to light mode' : 'Switch to dark mode'}
+                >
+                  {theme === 'midnight' ? <Sun size={16} strokeWidth={2} /> : <Moon size={16} strokeWidth={2} />}
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Main content */}
-          <div className="main-content">
+          <div className={`main-content ${sidebarOpen ? '' : 'main-content-expanded'}`}>
+
+            {/* Dashboard Tab */}
+            {activeTab === 'dashboard' && (() => {
+              const totalCount = emails.length;
+              const unreadCount = emails.filter(e => e.status === 'unread').length;
+              const readCount = totalCount - unreadCount;
+              return (
+                <>
+                  <header className="tab-header">
+                    <h1>Dashboard</h1>
+                  </header>
+
+                  <div className="tab-body">
+                    {/* Bento stat row */}
+                    {totalCount > 0 && (
+                      <div className="stats-cards stats-cards-compact">
+                        <div className="stat-card stat-card-wide">
+                          <div className="stat-number">{totalCount}</div>
+                          <div className="stat-label">Total Emails</div>
+                          <div className="stat-proportion-bar">
+                            <div className="stat-proportion-unread" style={{ width: `${(unreadCount / totalCount) * 100}%` }} />
+                            <div className="stat-proportion-read" style={{ width: `${(readCount / totalCount) * 100}%` }} />
+                          </div>
+                          <div className="stat-proportion-legend">
+                            <span><i className="stat-dot stat-dot-unread" />{unreadCount} unread</span>
+                            <span><i className="stat-dot stat-dot-read" />{readCount} read</span>
+                          </div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{unreadCount}</div>
+                          <div className="stat-label">Unread</div>
+                        </div>
+                        <div className="stat-card">
+                          <div className="stat-number">{readCount}</div>
+                          <div className="stat-label">Read</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI digest hero */}
+                    <div className="email-card">
+                      <div className="email-card-header">
+                        <h3>🧠 Today's Summary</h3>
+                      </div>
+
+                      {loading ? (
+                        <div className="email-list">
+                          {[1, 2, 3].map(i => (
+                            <div key={i} className="skeleton-email-item">
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                                <div className="skeleton skeleton-row medium" />
+                                <div className="skeleton skeleton-badge" />
+                              </div>
+                              <div className="skeleton skeleton-row full" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : totalCount === 0 ? (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">✨</div>
+                          <p>No emails synced yet.<br/>Sync your inbox to see your AI-powered digest.</p>
+                        </div>
+                      ) : (
+                        <>
+                          <p style={{ padding: '0 0 14px', color: 'var(--text-secondary)', fontSize: '0.88em' }}>
+                            <strong>{totalCount}</strong> email{totalCount === 1 ? '' : 's'} in your inbox
+                            {unreadCount > 0 && (
+                              <> · <span style={{ color: '#d97706', fontWeight: 700 }}>{unreadCount} need{unreadCount === 1 ? 's' : ''} attention</span></>
+                            )}
+                          </p>
+                          <div className="email-list">
+                            {emails.slice(0, 3).map((email, i) => (
+                              <div
+                                key={email.emailId ?? i}
+                                className="email-item email-item-clickable dashboard-digest-item"
+                                onClick={() => openEmailDetail(email)}
+                              >
+                                <div className="dashboard-rank-badge">{i + 1}</div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div className="email-item-header">
+                                    <strong className="email-subject">{email.subject}</strong>
+                                    <span className="email-status">STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}</span>
+                                  </div>
+                                  {email.summary && <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Recent emails */}
+                    <div className="email-card" style={{ marginTop: '1.5rem' }}>
+                      <div className="email-card-header">
+                        <h3>📬 Recent Emails</h3>
+                        <button
+                          onClick={() => setActiveTab('inbox')}
+                          style={{ background: 'none', border: 'none', color: 'var(--accent)', fontWeight: 600, fontSize: '0.85em', cursor: 'pointer', fontFamily: 'inherit' }}
+                        >
+                          View all →
+                        </button>
+                      </div>
+                      {totalCount === 0 ? (
+                        <p style={{ padding: '1rem', color: 'var(--text-muted)' }}>No emails to show.</p>
+                      ) : (
+                        <div className="email-list">
+                          {emails.slice(0, 5).map((email, i) => (
+                            <div
+                              key={email.emailId ?? i}
+                              className="email-item email-item-clickable"
+                              onClick={() => openEmailDetail(email)}
+                            >
+                              <div className="email-item-header">
+                                <strong className="email-subject">{email.subject}</strong>
+                                <span className="email-status">STATUS: {email.status ? email.status.toUpperCase() : 'N/A'}</span>
+                              </div>
+                              {email.summary && <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
+            {activeTab === 'compose' && (
+              <>
+                <header className="tab-header">
+                  <h1>
+                    {composeSeed?.mode === 'replyAll' ? 'Reply all'
+                      : composeSeed?.mode === 'forward' ? 'Forward'
+                      : composeSeed?.mode === 'reply' ? 'Reply'
+                      : 'Compose'}
+                  </h1>
+                  <button onClick={() => setActiveTab('inbox')} className="btn-sync">Back to Inbox</button>
+                </header>
+                <div className="tab-body">
+                  <Compose
+                    key={composeKey}
+                    accounts={connectedAccounts}
+                    contacts={composeContacts}
+                    signature={signature}
+                    seed={composeSeed}
+                    onCancel={() => setActiveTab('inbox')}
+                    onSent={() => {
+                      showToast('Email sent.', 'success');
+                      setComposeSeed(undefined);
+                      setActiveTab('inbox');
+                    }}
+                  />
+                </div>
+              </>
+            )}
 
             {/* Inbox Tab */}
             {activeTab === 'inbox' && (
@@ -1118,7 +1440,10 @@ function App() {
                                               key={att.id}
                                               className="attachment-chip"
                                               disabled={attachmentLoadingId === att.id}
-                                              onClick={e => { e.stopPropagation(); msg.emailId && downloadAttachment(msg.emailId, att); }}
+                                              onClick={e => {
+                                                e.stopPropagation();
+                                                if (msg.emailId) downloadAttachment(msg.emailId, att);
+                                              }}
                                             >
                                               📎 {att.filename} ({formatFileSize(att.size)})
                                               {attachmentLoadingId === att.id ? ' ⏳' : ''}
@@ -1193,6 +1518,11 @@ function App() {
                                         }
                                         return bodyData ? <p className="email-body-text">(This email has no readable body content.)</p> : null;
                                       })()}
+                                      <div className="message-actions">
+                                        <button onClick={() => openComposeFromEmail('reply', msg)}>Reply</button>
+                                        <button onClick={() => openComposeFromEmail('replyAll', msg)}>Reply all</button>
+                                        <button onClick={() => openComposeFromEmail('forward', msg)}>Forward</button>
+                                      </div>
                                     </div>
                                   )}
                                 </div>
@@ -1208,9 +1538,6 @@ function App() {
                 <>
                   <header className="tab-header">
                     <h1>Overview</h1>
-                    <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
-                      {loading ? 'Loading data...' : '🔄 Sync with Server'}
-                    </button>
                   </header>
 
                   {/* Account filter tabs — only visible when 2+ accounts are connected */}
@@ -1255,6 +1582,31 @@ function App() {
                     </div>
                   )}
 
+                  {/* Search — subject, sender, or content */}
+                  {emails.length > 0 && (
+                    <div className="inbox-search-bar">
+                      <div className="inbox-search-input-wrap">
+                        <span className="inbox-search-icon">🔎</span>
+                        <input
+                          type="text"
+                          value={inboxSearch}
+                          onChange={e => setInboxSearch(e.target.value)}
+                          placeholder="Search by subject, sender, or content"
+                          className="inbox-search-input"
+                        />
+                        {inboxSearch && (
+                          <button
+                            className="inbox-search-clear"
+                            onClick={() => setInboxSearch('')}
+                            aria-label="Clear search"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="tab-body">
                     <div className="email-card">
                       <div className="email-card-header">
@@ -1262,9 +1614,19 @@ function App() {
                       </div>
 
                       {(() => {
-                        const visibleEmails = labelFilter === 'all'
+                        const byLabel = labelFilter === 'all'
                           ? emails
                           : emails.filter(e => (e.labels || []).includes(labelFilter));
+                        const query = inboxSearch.trim().toLowerCase();
+                        const visibleEmails = query
+                          ? byLabel.filter(e =>
+                              e.subject?.toLowerCase().includes(query) ||
+                              e.from?.toLowerCase().includes(query) ||
+                              e.providerEmail?.toLowerCase().includes(query) ||
+                              e.content?.toLowerCase().includes(query) ||
+                              e.summary?.toLowerCase().includes(query)
+                            )
+                          : byLabel;
                         return loading ? (
                         <div className="email-list">
                           {[1,2,3,4].map(i => (
@@ -1317,7 +1679,10 @@ function App() {
                                       key={att.id}
                                       className="attachment-chip"
                                       disabled={attachmentLoadingId === att.id}
-                                      onClick={e => { e.stopPropagation(); email.emailId && downloadAttachment(email.emailId, att); }}
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        if (email.emailId) downloadAttachment(email.emailId, att);
+                                      }}
                                     >
                                       📎 {att.filename} ({formatFileSize(att.size)})
                                       {attachmentLoadingId === att.id ? ' ⏳' : ''}
@@ -1327,6 +1692,11 @@ function App() {
                               )}
                             </div>
                           ))}
+                        </div>
+                      ) : query ? (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">🔎</div>
+                          <p>No matches for "{inboxSearch.trim()}".<br/>Try a different subject or sender.</p>
                         </div>
                       ) : (
                         <div className="empty-inbox">
@@ -1387,14 +1757,27 @@ function App() {
                               <p className="drafting-snippet">{emails[selectedEmailIndex].content}</p>
                             </div>
 
-                            <button
-                              onClick={() => fetchDraft(emails[selectedEmailIndex!])}
-                              disabled={draftLoading}
-                              className="btn-sync"
-                              style={{ marginBottom: '1rem' }}
-                            >
-                              {draftLoading ? '⏳ Generating...' : '✨ Generate Draft Reply'}
-                            </button>
+                            <div className="draft-tone-row">
+                              <div className="draft-tone-picker">
+                                {DRAFT_TONES.map(t => (
+                                  <button
+                                    key={t.id}
+                                    className={`draft-tone-option ${draftTone === t.id ? 'active' : ''}`}
+                                    onClick={() => setDraftTone(t.id)}
+                                    disabled={draftLoading}
+                                  >
+                                    {t.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                onClick={() => fetchDraft(emails[selectedEmailIndex!], draftTone)}
+                                disabled={draftLoading}
+                                className="btn-sync draft-generate-btn"
+                              >
+                                {draftLoading ? '⏳ Generating...' : '✨ Generate Draft Reply'}
+                              </button>
+                            </div>
 
                             {draftLoading && (
                               <div className="skeleton-draft">
@@ -1620,9 +2003,21 @@ function App() {
                     <>
                       {/* Summary cards */}
                       <div className="stats-cards">
-                        <div className="stat-card">
+                        <div className="stat-card stat-card-wide">
                           <div className="stat-number">{stats.total}</div>
                           <div className="stat-label">Total Emails</div>
+                          {stats.total > 0 && (
+                            <>
+                              <div className="stat-proportion-bar">
+                                <div className="stat-proportion-unread" style={{ width: `${(stats.unread / stats.total) * 100}%` }} />
+                                <div className="stat-proportion-read" style={{ width: `${(stats.read / stats.total) * 100}%` }} />
+                              </div>
+                              <div className="stat-proportion-legend">
+                                <span><i className="stat-dot stat-dot-unread" />{stats.unread} unread</span>
+                                <span><i className="stat-dot stat-dot-read" />{stats.read} read</span>
+                              </div>
+                            </>
+                          )}
                         </div>
                         <div className="stat-card">
                           <div className="stat-number">{stats.unread}</div>
@@ -1724,6 +2119,25 @@ function App() {
                         style={{ marginLeft: 'auto' }}
                       >
                         {fetchLimitSaving ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Manage labels */}
+                  <div className="settings-card" style={{ marginBottom: '20px' }}>
+                    <h3>Signature</h3>
+                    <p>This plain-text signature is appended automatically when you send an email.</p>
+                    <textarea
+                      className="settings-signature"
+                      value={signature}
+                      maxLength={2000}
+                      onChange={event => setSignature(event.target.value)}
+                      placeholder={'Best,\nYour name'}
+                    />
+                    <div className="settings-signature-actions">
+                      <span>{signature.length}/2000</span>
+                      <button className="btn-sync" onClick={saveSignature} disabled={signatureSaving}>
+                        {signatureSaving ? 'Saving...' : 'Save signature'}
                       </button>
                     </div>
                   </div>
@@ -1917,9 +2331,40 @@ function App() {
               </div>
             ))}
           </div>
+
+          {/* Global sync action — one persistent button instead of a per-tab header button.
+              Hidden on Compose, which has its own footer action bar in that same corner. */}
+          {activeTab !== 'compose' && (
+            <button
+              onClick={fetchFromBackend}
+              disabled={loading}
+              className="btn-sync-fab"
+              aria-label="Sync with server"
+              title="Sync with server"
+            >
+              <RefreshCw size={18} strokeWidth={2.25} className={loading ? 'btn-sync-fab-spin' : ''} />
+              <span>{loading ? 'Syncing…' : 'Sync with Server'}</span>
+            </button>
+          )}
         </div>
-      )}
-    </Authenticator>
+  );
+
+  return (
+    <div className="login-shell" data-theme="midnight">
+      <Authenticator loginMechanisms={['email']} components={{
+          Header() {
+            return (
+              <div className="login-header">
+                <img src="/maily-logo.png" alt="Maily" className="login-header-logo" />
+                <p className="login-header-title">Maily</p>
+                <p className="login-header-subtitle">Smart Email Assistant</p>
+              </div>
+            );
+          }
+        }}>
+        {renderApp}
+      </Authenticator>
+    </div>
   );
 }
 
