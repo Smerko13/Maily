@@ -85,6 +85,33 @@ resource "aws_dynamodb_table" "maily_labels" {
     }
 }
 
+resource "aws_dynamodb_table" "maily_category_types" {
+    name = "Maily-CategoryTypes"
+    billing_mode = "PAY_PER_REQUEST"
+    hash_key = "userId"
+    range_key = "categoryTypeId"
+    deletion_protection_enabled = true
+
+    attribute {
+        name = "userId"
+        type = "S"
+    }
+
+    attribute {
+        name = "categoryTypeId"
+        type = "S"
+    }
+
+    point_in_time_recovery {
+      enabled = true
+    }
+
+    tags = {
+        Project = "Maily"
+        Environment = "Development"
+    }
+}
+
 resource "aws_dynamodb_table" "maily_category_items" {
     name = "Maily-CategoryItems"
     billing_mode = "PAY_PER_REQUEST"

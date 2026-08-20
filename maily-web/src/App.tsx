@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
+import CategoryWizard from './components/CategoryWizard';
 import './App.css';
 
 interface Attachment {
@@ -11,9 +12,9 @@ interface Attachment {
   size: number;
 }
 
-type Provider = 'gmail' | 'outlook';
+export type Provider = 'gmail' | 'outlook';
 
-interface Email {
+export interface Email {
   emailId?: string;
   subject: string;
   from?: string;
@@ -33,12 +34,12 @@ interface Email {
   categoryItemId?: string;
 }
 
-interface ConnectedAccount {
+export interface ConnectedAccount {
   email: string;
   provider: Provider;
 }
 
-interface LabelDef {
+export interface LabelDef {
   id: string;
   name: string;
   description: string;
@@ -51,7 +52,7 @@ function isCustomLabel(label: LabelDef): boolean {
   return label.id.startsWith('custom#');
 }
 
-interface CategoryItem {
+export interface CategoryItem {
   itemId: string;
   categoryType: string;
   fields: Record<string, string | null>;
@@ -63,42 +64,91 @@ interface CategoryItem {
   isAtRisk: boolean;
 }
 
-// Only "delivery" ships in v1 — kept as a small lookup (icon + how to build a card title/date) so
-// adding a second category type later is additive here too, mirroring CATEGORY_TYPES on the backend.
-const CATEGORY_TYPE_META: Record<string, { label: string; icon: string; primaryDateField: string; title: (fields: CategoryItem['fields']) => string }> = {
-  delivery: {
-    label: 'Delivery',
-    icon: '📦',
-    primaryDateField: 'estimatedDelivery',
-    title: (fields) => [fields.merchant, fields.orderDescription].filter(Boolean).join(' — ') || 'Delivery',
-  },
-};
+export type CategoryFieldType = 'string' | 'number' | 'date' | 'enum' | 'boolean';
 
-function categoryTypeMeta(categoryType: string) {
-  return CATEGORY_TYPE_META[categoryType] ?? { label: categoryType, icon: '🏷️', primaryDateField: '', title: () => categoryType };
+export interface CategoryFieldDef {
+  key: string;
+  label: string;
+  type: CategoryFieldType;
+  hint?: string;
+  values?: string[];
+  sticky?: boolean;
 }
 
-function CategoryItemStatusBadge({ item }: { item: CategoryItem }) {
+export interface CategoryRule {
+  type: 'field_equals' | 'date_passed_without';
+  field?: string;
+  dateField?: string;
+  values: string[];
+}
+
+// The schema-driven metadata for one category type (built-in or custom), as returned by
+// GET /category-types — this replaces what used to be a hardcoded frontend lookup table, so a new
+// category type (built-in or user-created via the wizard) needs zero frontend code changes to render.
+export interface CategoryTypeMeta {
+  id: string;
+  label: string;
+  icon: string;
+  classifierDescription: string;
+  fields: CategoryFieldDef[];
+  matchKeys: string[];
+  titleTemplate: string;
+  primaryDateField: string;
+  cardFields: string[];
+  completionRule: CategoryRule | null;
+  atRiskRule: CategoryRule | null;
+  automations: unknown[];
+  schemaVersion: number;
+  isBuiltIn: boolean;
+}
+
+export const FALLBACK_CATEGORY_TYPE_META: CategoryTypeMeta = {
+  id: '', label: '', icon: '🏷️', classifierDescription: '', fields: [], matchKeys: [],
+  titleTemplate: '', primaryDateField: '', cardFields: [], completionRule: null, atRiskRule: null,
+  automations: [], schemaVersion: 1, isBuiltIn: true,
+};
+
+export function categoryTypeMeta(categoryType: string, catalog: Record<string, CategoryTypeMeta>): CategoryTypeMeta {
+  return catalog[categoryType] ?? { ...FALLBACK_CATEGORY_TYPE_META, id: categoryType, label: categoryType, titleTemplate: categoryType };
+}
+
+// Naive {fieldKey} placeholder substitution, deliberately not a full templating engine — also cleans
+// up leftover separators (e.g. a dangling " — ") left behind when a referenced field is empty.
+export function renderTitleTemplate(template: string, fields: CategoryItem['fields']): string {
+  if (!template) return '';
+  const rendered = template.replace(/\{(\w+)\}/g, (_, key) => fields[key] || '');
+  return rendered.replace(/^[\s—-]+|[\s—-]+$/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+
+export function categoryItemTitle(meta: CategoryTypeMeta, fields: CategoryItem['fields']): string {
+  return renderTitleTemplate(meta.titleTemplate, fields) || meta.label || 'Untitled';
+}
+
+export function CategoryItemStatusBadge({ item }: { item: CategoryItem }) {
   if (item.isComplete) return <span className="status-badge status-done">✅ Done</span>;
   if (item.isAtRisk) return <span className="status-badge status-at-risk">⚠️ At risk</span>;
   return <span className="status-badge status-in-progress">{item.fields.status || 'In progress'}</span>;
 }
 
-// Card content is currently delivery-specific (tracking number/carrier/ETA) since that's the only
-// shipped category type — generalize this once a second category type is added.
-function CategoryItemCard({ item, onClick }: { item: CategoryItem; onClick: () => void }) {
-  const meta = categoryTypeMeta(item.categoryType);
+// Fully schema-driven: which lines appear on a card is driven by meta.cardFields (set either by the
+// built-in CATEGORY_TYPES definition, or by the user in the Category Wizard) rather than hardcoded
+// per-type JSX — this is what lets a wizard-created category render as well as the built-in ones.
+export function CategoryItemCard({ item, meta, onClick }: { item: CategoryItem; meta: CategoryTypeMeta; onClick: () => void }) {
   const primaryDate = meta.primaryDateField ? item.fields[meta.primaryDateField] : undefined;
+  const primaryDateLabel = meta.fields.find(f => f.key === meta.primaryDateField)?.label || 'Date';
   return (
     <div className="category-item-card" onClick={onClick}>
       <div className="category-item-card-header">
-        <span className="category-item-card-title">{meta.icon} {meta.title(item.fields)}</span>
+        <span className="category-item-card-title">{meta.icon} {categoryItemTitle(meta, item.fields)}</span>
         <CategoryItemStatusBadge item={item} />
       </div>
-      {item.fields.trackingNumber && (
-        <p className="category-item-card-line">📦 {item.fields.trackingNumber}{item.fields.carrier ? ` (${item.fields.carrier})` : ''}</p>
-      )}
-      {primaryDate && <p className="category-item-card-line">📅 ETA: {primaryDate}</p>}
+      {meta.cardFields.map(key => {
+        const value = item.fields[key];
+        if (!value) return null;
+        const fieldLabel = meta.fields.find(f => f.key === key)?.label ?? key;
+        return <p key={key} className="category-item-card-line">{fieldLabel}: {value}</p>;
+      })}
+      {primaryDate && <p className="category-item-card-line">📅 {primaryDateLabel}: {primaryDate}</p>}
     </div>
   );
 }
@@ -187,6 +237,17 @@ function App() {
   const [categoryItemLoading, setCategoryItemLoading] = useState<boolean>(false);
   const [returnToCategoryItemId, setReturnToCategoryItemId] = useState<string | null>(null);
 
+  // Built-in + this user's custom category types, keyed by id — replaces what used to be a hardcoded
+  // frontend metadata table, so the Category Wizard's custom types render with zero frontend changes.
+  const [categoryTypeCatalog, setCategoryTypeCatalog] = useState<Record<string, CategoryTypeMeta>>({});
+  // Non-null = the wizard panel is showing instead of the Smart Categories grid. 'replace' pre-loads
+  // wizardExisting as the starting draft (editing an already-created custom category).
+  const [categoryWizard, setCategoryWizard] = useState<{ mode: 'create' | 'replace'; existing?: CategoryTypeMeta } | null>(null);
+  // Which email's manual-classify panel is expanded (inbox detail thread view). Only one open at a time.
+  const [classifyMenuEmailId, setClassifyMenuEmailId] = useState<string | null>(null);
+  const [classifySaving, setClassifySaving] = useState<boolean>(false);
+  const [categoryHintDrafts, setCategoryHintDrafts] = useState<Record<string, string>>({}); // Settings' "add a hint" inputs, keyed by categoryTypeId
+
   useEffect(() => {
     localStorage.setItem('mailyTheme', theme);
   }, [theme]);
@@ -228,10 +289,31 @@ function App() {
     }
   };
 
-  // Load connected email accounts (Gmail + Outlook) and the label catalog on page load. Also trigger
-  // a sync so the inbox reflects the latest mail as soon as the user opens/refreshes the app, rather
-  // than just showing whatever was last synced — the loadEmails effect below shows the cached DB state
-  // immediately, and this overwrites it once the sync's actual provider round-trip completes.
+  // Fetches this user's full category-type catalog (built-ins + their own custom types) — the
+  // schema-driven metadata every generic card/detail render and the wizard depend on.
+  const loadCategoryTypeCatalog = async () => {
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) return;
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/category-types`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const catalog: Record<string, CategoryTypeMeta> = {};
+      (data.categoryTypes || []).forEach((ct: CategoryTypeMeta) => { catalog[ct.id] = ct; });
+      setCategoryTypeCatalog(catalog);
+    } catch {
+      // silently fail
+    }
+  };
+
+  // Load connected email accounts (Gmail + Outlook), the label catalog, and the category-type catalog
+  // on page load. Also trigger a sync so the inbox reflects the latest mail as soon as the user opens/
+  // refreshes the app, rather than just showing whatever was last synced — the loadEmails effect below
+  // shows the cached DB state immediately, and this overwrites it once the sync's actual provider
+  // round-trip completes.
   // hasMountedRef guards against React StrictMode's dev-only double-invoke of mount effects, which
   // would otherwise fire two real /sync calls (double provider hits, double AI classify) on every load.
   const hasMountedRef = useRef(false);
@@ -240,6 +322,7 @@ function App() {
     hasMountedRef.current = true;
     loadConnectedAccounts();
     loadLabels();
+    loadCategoryTypeCatalog();
     fetchFromBackend();
   }, []);
 
@@ -653,6 +736,51 @@ function App() {
     }
   };
 
+  // Manually classify one email: toggle labels on/off, and/or assign or clear its smart category.
+  // Unlike AI auto-classification, this runs on-demand from a single user action — it's how existing
+  // mail gets attached to a brand-new custom category (no automated backfill), and also doubles as a
+  // "fix a wrong/missing AI classification" tool. Patches local state in place so chips/cards update
+  // without a full refetch.
+  const classifyEmail = async (email: Email, updates: { addLabels?: string[]; removeLabels?: string[]; categoryType?: string | null }) => {
+    if (!email.emailId) return;
+    setClassifySaving(true);
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/email-classify`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailId: email.emailId, ...updates })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+
+      const patch = (list: Email[]) => list.map(e => e.emailId === email.emailId
+        ? { ...e, labels: data.labels, categoryItemId: data.categoryItem?.itemId ?? (updates.categoryType === null ? undefined : e.categoryItemId) }
+        : e);
+      setEmails(prev => patch(prev));
+      if (email.threadId) {
+        setThreadEmails(prev => prev[email.threadId as string] ? { ...prev, [email.threadId as string]: patch(prev[email.threadId as string]) } : prev);
+      }
+      setOpenedEmail(prev => prev && prev.emailId === email.emailId
+        ? { ...prev, labels: data.labels, categoryItemId: data.categoryItem?.itemId ?? (updates.categoryType === null ? undefined : prev.categoryItemId) }
+        : prev);
+      if (updates.categoryType !== undefined) {
+        // A category was assigned/cleared — the Smart Categories tab's cached list is now stale;
+        // force a refetch next time it's viewed rather than guessing at how to patch it in place.
+        setCategoryItems([]);
+      }
+      showToast('Email classified', 'success');
+    } catch (error) {
+      console.error('Error classifying email:', error);
+      showToast('Failed to classify email. Please try again.', 'error');
+    } finally {
+      setClassifySaving(false);
+    }
+  };
+
   // Save the email fetch limit preference to the backend
   const saveFetchLimit = async (limit: number) => {
     setFetchLimitSaving(true);
@@ -758,6 +886,54 @@ function App() {
       showToast('Failed to delete label. Please try again.', 'error');
     } finally {
       setLabelSaving(false);
+    }
+  };
+
+  // Deletes a custom category type and its tracked items (cascades server-side).
+  const deleteCategoryType = async (categoryTypeId: string) => {
+    if (!window.confirm('Delete this category? Its tracked items will be deleted too.')) return;
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/category-types`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoryTypeId })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      await loadCategoryTypeCatalog();
+      setCategoryItems([]); // stale — force a refetch next time the tab is viewed
+      showToast('Category deleted', 'success');
+    } catch (error) {
+      console.error('Error deleting category type:', error);
+      showToast('Failed to delete category. Please try again.', 'error');
+    }
+  };
+
+  // Lightweight edit: appends free text to a category's classifier description, helping the AI catch
+  // more matching emails without going through the full wizard (which is reserved for structural changes).
+  const appendCategoryClassifierHint = async (categoryTypeId: string) => {
+    const hint = (categoryHintDrafts[categoryTypeId] || '').trim();
+    if (!hint) return;
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/category-types`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoryTypeId, appendClassifierHint: hint })
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      setCategoryHintDrafts(prev => ({ ...prev, [categoryTypeId]: '' }));
+      await loadCategoryTypeCatalog();
+      showToast('Hint added', 'success');
+    } catch (error) {
+      console.error('Error updating category type:', error);
+      showToast('Failed to add hint. Please try again.', 'error');
     }
   };
 
@@ -950,6 +1126,53 @@ function App() {
                                           ))}
                                         </div>
                                       )}
+
+                                      <div className="classify-toolbar" onClick={e => e.stopPropagation()}>
+                                        <button
+                                          className="btn-classify"
+                                          onClick={() => setClassifyMenuEmailId(prev => prev === msg.emailId ? null : (msg.emailId ?? null))}
+                                        >
+                                          🏷️ Classify
+                                        </button>
+                                      </div>
+                                      {classifyMenuEmailId === msg.emailId && (
+                                        <div className="classify-menu" onClick={e => e.stopPropagation()}>
+                                          <div className="classify-menu-section">
+                                            <span className="classify-menu-title">Labels</span>
+                                            <div className="classify-menu-checkboxes">
+                                              {labels.map(l => {
+                                                const checked = (msg.labels || []).includes(l.id);
+                                                return (
+                                                  <label key={l.id} className="classify-menu-checkbox">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={checked}
+                                                      disabled={classifySaving}
+                                                      onChange={() => classifyEmail(msg, checked ? { removeLabels: [l.id] } : { addLabels: [l.id] })}
+                                                    />
+                                                    <span className="label-chip" style={{ background: l.color }}>{l.name}</span>
+                                                  </label>
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                          <div className="classify-menu-section">
+                                            <span className="classify-menu-title">Smart category</span>
+                                            <select
+                                              className="classify-menu-select"
+                                              disabled={classifySaving}
+                                              defaultValue=""
+                                              onChange={e => { const v = e.target.value; classifyEmail(msg, { categoryType: v === '' ? null : v }); e.target.value = ''; }}
+                                            >
+                                              <option value="" disabled={!msg.categoryItemId}>{msg.categoryItemId ? '— Clear category —' : '— Assign to category —'}</option>
+                                              {Object.values(categoryTypeCatalog).map(ct => (
+                                                <option key={ct.id} value={ct.id}>{ct.icon} {ct.label}</option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                        </div>
+                                      )}
+
                                       {bodyLoadingId === msg.emailId ? (
                                         <div className="skeleton skeleton-row full" />
                                       ) : (() => {
@@ -1208,7 +1431,18 @@ function App() {
 
             {/* Smart Categories Tab */}
             {activeTab === 'categories' && (
-              openedCategoryItem ? (
+              categoryWizard ? (
+                <CategoryWizard
+                  mode={categoryWizard.mode}
+                  existingCategoryType={categoryWizard.existing}
+                  emails={emails}
+                  accounts={connectedAccounts}
+                  apiBaseUrl={import.meta.env.VITE_API_BASE_URL}
+                  getAuthToken={async () => (await fetchAuthSession()).tokens?.idToken?.toString() ?? null}
+                  onClose={() => setCategoryWizard(null)}
+                  onSaved={() => { setCategoryWizard(null); loadCategoryTypeCatalog(); loadCategoryItems(); showToast('Category saved', 'success'); }}
+                />
+              ) : openedCategoryItem ? (
                 <>
                   <header className="tab-header">
                     <button className="btn-back" onClick={goBackToCategoryItems}>← Back to Smart Categories</button>
@@ -1217,17 +1451,19 @@ function App() {
                   <div className="tab-body">
                     {categoryItemLoading ? (
                       <div className="email-card"><div className="skeleton skeleton-row full" /></div>
-                    ) : (
+                    ) : (() => {
+                      const meta = categoryTypeMeta(openedCategoryItem.categoryType, categoryTypeCatalog);
+                      return (
                       <>
                         <div className="email-card">
                           <div className="email-card-header">
-                            <h3>{categoryTypeMeta(openedCategoryItem.categoryType).icon} {categoryTypeMeta(openedCategoryItem.categoryType).title(openedCategoryItem.fields)}</h3>
+                            <h3>{meta.icon} {categoryItemTitle(meta, openedCategoryItem.fields)}</h3>
                             <CategoryItemStatusBadge item={openedCategoryItem} />
                           </div>
                           <div className="category-item-fields">
                             {Object.entries(openedCategoryItem.fields).filter(([, value]) => value).map(([key, value]) => (
                               <div key={key} className="category-item-field">
-                                <span className="category-item-field-label">{key}</span>
+                                <span className="category-item-field-label">{meta.fields.find(f => f.key === key)?.label ?? key}</span>
                                 <span className="category-item-field-value">{value}</span>
                               </div>
                             ))}
@@ -1257,16 +1493,22 @@ function App() {
                           </div>
                         </div>
                       </>
-                    )}
+                      );
+                    })()}
                   </div>
                 </>
               ) : (
                 <>
                   <header className="tab-header">
                     <h1>Smart Categories</h1>
-                    <button onClick={loadCategoryItems} disabled={categoryItemsLoading} className="btn-sync">
-                      {categoryItemsLoading ? 'Loading...' : '🔄 Refresh'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                      <button onClick={() => setCategoryWizard({ mode: 'create' })} className="btn-connect">
+                        + New Category
+                      </button>
+                      <button onClick={loadCategoryItems} disabled={categoryItemsLoading} className="btn-sync">
+                        {categoryItemsLoading ? 'Loading...' : '🔄 Refresh'}
+                      </button>
+                    </div>
                   </header>
 
                   <div className="tab-body">
@@ -1281,7 +1523,7 @@ function App() {
                       </div>
                     ) : categoryItems.length > 0 ? (() => {
                       const active = [...categoryItems.filter(i => !i.isComplete)].sort((a, b) => {
-                        const field = categoryTypeMeta(a.categoryType).primaryDateField;
+                        const field = categoryTypeMeta(a.categoryType, categoryTypeCatalog).primaryDateField;
                         return (a.fields[field] || '').localeCompare(b.fields[field] || '');
                       });
                       const done = categoryItems.filter(i => i.isComplete);
@@ -1289,7 +1531,7 @@ function App() {
                         <>
                           <div className="category-item-grid">
                             {active.map(item => (
-                              <CategoryItemCard key={item.itemId} item={item} onClick={() => openCategoryItemDetail(item.itemId)} />
+                              <CategoryItemCard key={item.itemId} item={item} meta={categoryTypeMeta(item.categoryType, categoryTypeCatalog)} onClick={() => openCategoryItemDetail(item.itemId)} />
                             ))}
                           </div>
                           {done.length > 0 && (
@@ -1297,7 +1539,7 @@ function App() {
                               <summary>Completed ({done.length})</summary>
                               <div className="category-item-grid">
                                 {done.map(item => (
-                                  <CategoryItemCard key={item.itemId} item={item} onClick={() => openCategoryItemDetail(item.itemId)} />
+                                  <CategoryItemCard key={item.itemId} item={item} meta={categoryTypeMeta(item.categoryType, categoryTypeCatalog)} onClick={() => openCategoryItemDetail(item.itemId)} />
                                 ))}
                               </div>
                             </details>
@@ -1307,7 +1549,7 @@ function App() {
                     })() : (
                       <div className="empty-inbox">
                         <div className="empty-inbox-icon">🚚</div>
-                        <p>No tracked deliveries yet.<br/>They'll show up here automatically once Maily detects one in your synced mail.</p>
+                        <p>No tracked items yet.<br/>They'll show up here automatically once Maily detects one in your synced mail — or create your own category with "+ New Category".</p>
                       </div>
                     )}
                   </div>
@@ -1574,6 +1816,43 @@ function App() {
                         {labelSaving ? 'Saving...' : 'Create Label'}
                       </button>
                     </div>
+                  </div>
+
+                  {/* Manage custom smart categories */}
+                  <div className="settings-card" style={{ marginBottom: '20px' }}>
+                    <h3>🚚 Manage Custom Categories</h3>
+                    <p>
+                      Categories built into Maily can't be changed here. Your own categories (made with the Smart Categories wizard) can be edited, given more AI hints, or deleted.
+                    </p>
+
+                    {Object.values(categoryTypeCatalog).filter(ct => !ct.isBuiltIn).map(ct => (
+                      <div key={ct.id} className="label-manage-row" style={{ flexWrap: 'wrap' }}>
+                        <span className="label-chip" style={{ background: 'var(--accent)' }}>{ct.icon} {ct.label}</span>
+                        <span className="label-manage-description">{ct.fields.length} field{ct.fields.length !== 1 ? 's' : ''}</span>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button className="btn-disconnect" onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); setCategoryWizard({ mode: 'replace', existing: ct }); }}>
+                            Edit
+                          </button>
+                          <button className="btn-disconnect" onClick={() => deleteCategoryType(ct.id)}>Delete</button>
+                        </div>
+                        <div style={{ display: 'flex', gap: '0.5rem', width: '100%', marginTop: '0.5rem' }}>
+                          <input
+                            type="text"
+                            className="label-text-input label-description-input"
+                            value={categoryHintDrafts[ct.id] || ''}
+                            onChange={e => setCategoryHintDrafts(prev => ({ ...prev, [ct.id]: e.target.value }))}
+                            placeholder="Add a hint to help the AI catch more matching emails"
+                          />
+                          <button className="btn-sync" onClick={() => appendCategoryClassifierHint(ct.id)}>Add Hint</button>
+                        </div>
+                      </div>
+                    ))}
+
+                    {Object.values(categoryTypeCatalog).filter(ct => !ct.isBuiltIn).length === 0 && (
+                      <p style={{ padding: '0.75rem 0', color: 'var(--text-muted)' }}>
+                        No custom categories yet — create one from the "+ New Category" button on the Smart Categories tab.
+                      </p>
+                    )}
                   </div>
 
                   {/* Connected accounts */}

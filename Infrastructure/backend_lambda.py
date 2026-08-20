@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import uuid
 import base64
@@ -15,6 +16,7 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table('Maily-Emails')
 labels_table = dynamodb.Table('Maily-Labels')
 category_items_table = dynamodb.Table('Maily-CategoryItems')
+category_types_table = dynamodb.Table('Maily-CategoryTypes')
 
 _secrets_cache = None
 
@@ -67,11 +69,156 @@ CATEGORY_TYPES = {
         "matchKeys": ["orderNumber", "trackingNumber"],
         "titleTemplate": "{merchant} — {orderDescription}",
         "primaryDateField": "estimatedDelivery",
+        "cardFields": ["trackingNumber", "carrier"],
         "completionRule": {"type": "field_equals", "field": "status", "values": ["delivered"]},
         "atRiskRule": {"type": "date_passed_without", "dateField": "estimatedDelivery",
                        "field": "status", "values": ["delivered"]},
     },
 }
+
+# The 5 field types a category schema (built-in or user-defined) can declare. "enum" fields carry a
+# fixed `values` list (rendered/validated as a closed set); "boolean" fields are validated to exactly
+# "true"/"false"; "number"/"date"/"string" are trusted as free-form strings once extracted.
+CATEGORY_FIELD_TYPES = {"string", "number", "date", "enum", "boolean"}
+# The 2 rule types evaluate_category_rule understands — a user-defined schema's completionRule/atRiskRule
+# must be one of these (or None).
+CATEGORY_RULE_TYPES = {"field_equals", "date_passed_without"}
+
+def _category_type_row_to_schema(row):
+    """Converts a Maily-CategoryTypes DynamoDB row into the same schema shape as a CATEGORY_TYPES entry,
+    so downstream code (classify/extract/match/rules) never has to distinguish built-in vs. custom."""
+    return {
+        "label": row.get("label", ""),
+        "icon": row.get("icon") or "🏷️",
+        "classifierDescription": row.get("classifierDescription", ""),
+        "fields": row.get("fields", []),
+        "matchKeys": row.get("matchKeys", []) or [],
+        "titleTemplate": row.get("titleTemplate", ""),
+        "primaryDateField": row.get("primaryDateField", ""),
+        "cardFields": row.get("cardFields", []) or [],
+        "completionRule": row.get("completionRule") or None,
+        "atRiskRule": row.get("atRiskRule") or None,
+        "automations": row.get("automations", []) or [],
+        "schemaVersion": row.get("schemaVersion", 1),
+    }
+
+def get_category_type_catalog(user_id):
+    """This user's full category-type set: built-in types plus their own custom ones, keyed by id."""
+    custom = category_types_table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+    ).get('Items', [])
+    catalog = dict(CATEGORY_TYPES)
+    for c in custom:
+        catalog[c['categoryTypeId']] = _category_type_row_to_schema(c)
+    return catalog
+
+_FIELD_KEY_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9]*$')
+
+def _sanitize_rule(rule, field_keys):
+    """A rule is only ever trusted if it's one of the 2 known types and every field it references
+    actually exists on the schema — never partially trusted (e.g. a rule pointing at a since-removed
+    field is dropped entirely, not left referencing nothing)."""
+    if not isinstance(rule, dict) or rule.get('type') not in CATEGORY_RULE_TYPES:
+        return None
+    values = [str(v) for v in (rule.get('values') or []) if str(v).strip()]
+    if not values:
+        return None
+    if rule['type'] == 'field_equals':
+        field = rule.get('field')
+        if field not in field_keys:
+            return None
+        return {'type': 'field_equals', 'field': field, 'values': values}
+    date_field, field = rule.get('dateField'), rule.get('field')
+    if date_field not in field_keys or field not in field_keys:
+        return None
+    return {'type': 'date_passed_without', 'dateField': date_field, 'field': field, 'values': values}
+
+def _sanitize_category_draft(raw):
+    """Validates/coerces an AI-generated or client-submitted category draft into a safe schema dict —
+    this eventually drives DynamoDB writes, OpenAI prompts, and generic frontend rendering, so nothing
+    from it (field keys, types, rule references) is trusted outright. Returns (schema, warnings);
+    anything corrected/dropped is surfaced as a warning rather than failing the request outright."""
+    warnings = []
+    if not isinstance(raw, dict):
+        raw = {}
+
+    label = str(raw.get('label') or '').strip()[:60] or 'Untitled Category'
+    icon = str(raw.get('icon') or '').strip()[:8] or '🏷️'
+    classifier_description = str(raw.get('classifierDescription') or '').strip()[:500]
+    if not classifier_description:
+        warnings.append('classifierDescription was empty — this category will rarely be auto-detected until one is added.')
+
+    seen_keys = set()
+    fields = []
+    for f in (raw.get('fields') or [])[:12]:
+        if not isinstance(f, dict):
+            continue
+        key = str(f.get('key') or '').strip()
+        if not _FIELD_KEY_RE.match(key) or key in seen_keys:
+            continue
+
+        raw_type = f.get('type')
+        field_type = raw_type if raw_type in CATEGORY_FIELD_TYPES else 'string'
+        if raw_type not in CATEGORY_FIELD_TYPES:
+            warnings.append(f'Field "{key}" had an unrecognized type — defaulted to string.')
+
+        field = {'key': key, 'label': str(f.get('label') or key).strip()[:60], 'type': field_type}
+        hint = str(f.get('hint') or '').strip()[:300]
+        if hint:
+            field['hint'] = hint
+        if field_type == 'enum':
+            values = [str(v).strip() for v in (f.get('values') or []) if str(v).strip()][:20]
+            if not values:
+                warnings.append(f'Enum field "{key}" had no values — dropped.')
+                continue
+            field['values'] = values
+        if f.get('sticky'):
+            field['sticky'] = True
+
+        seen_keys.add(key)
+        fields.append(field)
+
+    if not fields:
+        warnings.append('No valid fields were produced — add at least one field manually.')
+
+    field_keys = {f['key'] for f in fields}
+    date_field_keys = {f['key'] for f in fields if f['type'] == 'date'}
+
+    match_keys = [k for k in (raw.get('matchKeys') or []) if k in field_keys][:2]
+
+    card_fields = [k for k in (raw.get('cardFields') or []) if k in field_keys][:2]
+    if not card_fields and fields:
+        # Never let a card render blank: default to the first non-enum field(s), falling back to
+        # whatever fields exist at all if every field happens to be an enum.
+        card_fields = [f['key'] for f in fields if f['type'] != 'enum'][:2] or [f['key'] for f in fields[:2]]
+
+    primary_date_field = raw.get('primaryDateField')
+    if primary_date_field not in date_field_keys:
+        primary_date_field = next(iter(date_field_keys), '')
+
+    title_template = str(raw.get('titleTemplate') or '').strip()[:200] or label
+
+    completion_rule = _sanitize_rule(raw.get('completionRule'), field_keys)
+    at_risk_rule = _sanitize_rule(raw.get('atRiskRule'), field_keys)
+    if raw.get('completionRule') and not completion_rule:
+        warnings.append('completionRule was invalid and was dropped.')
+    if raw.get('atRiskRule') and not at_risk_rule:
+        warnings.append('atRiskRule was invalid and was dropped.')
+
+    schema = {
+        'label': label,
+        'icon': icon,
+        'classifierDescription': classifier_description,
+        'fields': fields,
+        'matchKeys': match_keys,
+        'titleTemplate': title_template,
+        'primaryDateField': primary_date_field,
+        'cardFields': card_fields,
+        'completionRule': completion_rule,
+        'atRiskRule': at_risk_rule,
+        'automations': [],
+    }
+    return schema, warnings
 
 class DecimalEncoder(json.JSONEncoder):
     """boto3's DynamoDB resource API always returns numeric attributes as Decimal, which json.dumps
@@ -297,10 +444,10 @@ def evaluate_category_rule(rule, fields):
         return _rule_date_passed_without(fields, rule)
     return False
 
-def evaluate_category_item_state(category_type, fields):
+def evaluate_category_item_state(category_type, fields, category_catalog):
     """Returns (isComplete, isAtRisk) for a tracked category item, driven entirely by that
     category type's completionRule/atRiskRule — no per-category-type logic needed here."""
-    schema = CATEGORY_TYPES.get(category_type, {})
+    schema = category_catalog.get(category_type, {})
     is_complete = evaluate_category_rule(schema.get('completionRule'), fields)
     is_at_risk = (not is_complete) and evaluate_category_rule(schema.get('atRiskRule'), fields)
     return is_complete, is_at_risk
@@ -352,7 +499,7 @@ def summarize_email(subject, snippet):
 
 _SUMMARY_BATCH_SIZE = 20  # keeps each OpenAI prompt/response a reasonable size and limits blast radius of one failed call
 
-def classify_emails_batch(items, label_catalog):
+def classify_emails_batch(items, label_catalog, category_catalog):
     """Summarizes + assigns labels + flags a smart-category type for multiple emails (each
     {'subject':, 'snippet':}) in as few OpenAI calls as possible, chunked into groups of
     _SUMMARY_BATCH_SIZE. Returns a list of {'summary','labels','smartCategory'} in the same order as items.
@@ -360,10 +507,10 @@ def classify_emails_batch(items, label_catalog):
     email content itself, already being sent for summarization."""
     results = []
     for i in range(0, len(items), _SUMMARY_BATCH_SIZE):
-        results.extend(_classify_batch_chunk(items[i:i + _SUMMARY_BATCH_SIZE], label_catalog))
+        results.extend(_classify_batch_chunk(items[i:i + _SUMMARY_BATCH_SIZE], label_catalog, category_catalog))
     return results
 
-def _classify_batch_chunk(items, label_catalog):
+def _classify_batch_chunk(items, label_catalog, category_catalog):
     if not items:
         return []
 
@@ -374,7 +521,7 @@ def _classify_batch_chunk(items, label_catalog):
         for i, item in enumerate(items)
     )
     label_lines = "\n".join(f"- {l['id']}: {l['description']}" for l in label_catalog)
-    category_lines = "\n".join(f"- {key}: {schema['classifierDescription']}" for key, schema in CATEGORY_TYPES.items())
+    category_lines = "\n".join(f"- {key}: {schema['classifierDescription']}" for key, schema in category_catalog.items())
 
     prompt = (
         f"You are classifying and summarizing a batch of {len(items)} emails.\n\n"
@@ -428,27 +575,32 @@ def _classify_batch_chunk(items, label_catalog):
         summary = r.get('summary') or '(Summary unavailable)'
         labels = [l for l in (r.get('labels') or []) if l in valid_label_ids]
         smart_category = r.get('smartCategory')
-        if smart_category not in CATEGORY_TYPES:
+        if smart_category not in category_catalog:
             smart_category = None
         normalized.append({'summary': summary, 'labels': labels, 'smartCategory': smart_category})
     return normalized
 
 _EXTRACTION_BATCH_SIZE = 20
 
-def extract_category_fields_batch(items, category_type):
-    """Extracts a smart category's structured fields (e.g. tracking number, carrier, status for
-    "delivery") from each email, chunked the same way as classify_emails_batch. Only ever called on
-    the subset of a sync batch already flagged with this category_type — not every email."""
+def extract_category_fields_batch(items, category_type, category_catalog):
+    """Looks up category_type's schema in the catalog and delegates to _extract_fields_with_schema.
+    Only ever called on the subset of a sync batch already flagged with this category_type."""
+    return _extract_fields_with_schema(items, category_catalog[category_type])
+
+def _extract_fields_with_schema(items, schema):
+    """Extracts a category schema's structured fields (e.g. tracking number, carrier, status for
+    "delivery") from each email, chunked the same way as classify_emails_batch. Takes the schema
+    directly (rather than a category_type id) so it also works for an unpersisted wizard draft that
+    has no catalog entry yet — used both by sync-time extraction and the wizard's live preview."""
     results = []
     for i in range(0, len(items), _EXTRACTION_BATCH_SIZE):
-        results.extend(_extract_category_fields_chunk(items[i:i + _EXTRACTION_BATCH_SIZE], category_type))
+        results.extend(_extract_fields_with_schema_chunk(items[i:i + _EXTRACTION_BATCH_SIZE], schema))
     return results
 
-def _extract_category_fields_chunk(items, category_type):
+def _extract_fields_with_schema_chunk(items, schema):
     if not items:
         return []
 
-    schema = CATEGORY_TYPES[category_type]
     fields = schema['fields']
     field_keys = [f['key'] for f in fields]
     api_key = get_secrets()['OPENAI_API_KEY']
@@ -495,28 +647,38 @@ def _extract_category_fields_chunk(items, category_type):
         results.append({})
     results = results[:len(items)]
 
-    # Drop hallucinated/invalid enum values (e.g. a status the model invented outside the allowed set)
-    # rather than storing garbage that can never satisfy a category type's completionRule/atRiskRule.
-    enum_allowed = {f['key']: set(f['values']) for f in fields if f.get('type') == 'enum'}
-    normalized = []
-    for r in results:
-        row = {}
-        if isinstance(r, dict):
-            for k in field_keys:
-                v = r.get(k)
-                if not v:
-                    continue
-                if k in enum_allowed and v not in enum_allowed[k]:
-                    continue
-                row[k] = v
-        normalized.append(row)
-    return normalized
+    return [_normalize_extracted_row(r, schema) for r in results]
 
-def ai_match_category_item(extracted, summary, existing_items, category_type):
+def _normalize_extracted_row(raw_row, schema):
+    """Validates one extracted-fields dict against a schema: drops unknown keys, hallucinated/invalid
+    enum values (e.g. a status the model invented outside the allowed set — otherwise storable garbage
+    that can never satisfy a completionRule/atRiskRule), and non-boolean values for boolean fields.
+    Used both for fresh AI extraction output and for client-echoed extraction data (e.g. a wizard's
+    reference emails, finalized at category-type creation time without a second AI call)."""
+    fields = schema['fields']
+    field_keys = [f['key'] for f in fields]
+    enum_allowed = {f['key']: set(f['values']) for f in fields if f.get('type') == 'enum'}
+    boolean_keys = {f['key'] for f in fields if f.get('type') == 'boolean'}
+    row = {}
+    if isinstance(raw_row, dict):
+        for k in field_keys:
+            v = raw_row.get(k)
+            if not v:
+                continue
+            if k in enum_allowed and v not in enum_allowed[k]:
+                continue
+            if k in boolean_keys:
+                v = str(v).strip().lower()
+                if v not in ('true', 'false'):
+                    continue
+            row[k] = v
+    return row
+
+def ai_match_category_item(extracted, summary, existing_items, category_type, category_catalog):
     """Small, non-batched fallback match call — only used when deterministic matchKeys don't apply
     (e.g. an order-confirmation email with no tracking number yet), and only when the user has at
     least one existing open item of this category type. Returns the matched item dict, or None."""
-    schema = CATEGORY_TYPES[category_type]
+    schema = category_catalog[category_type]
     api_key = get_secrets()['OPENAI_API_KEY']
 
     candidate_lines = "\n".join(
@@ -602,6 +764,20 @@ def lambda_handler(event, context):
         return handle_list_category_items(event)
     elif http_method == 'GET' and path == '/smart-category':
         return handle_get_category_item(event)
+    elif http_method == 'GET' and path == '/category-types':
+        return handle_list_category_types(event)
+    elif http_method == 'POST' and path == '/category-types/generate':
+        return handle_generate_category_draft(event)
+    elif http_method == 'POST' and path == '/category-types':
+        return handle_create_category_type(event)
+    elif http_method == 'PUT' and path == '/category-types':
+        return handle_replace_category_type(event)
+    elif http_method == 'PATCH' and path == '/category-types':
+        return handle_patch_category_type(event)
+    elif http_method == 'DELETE' and path == '/category-types':
+        return handle_delete_category_type(event)
+    elif http_method == 'POST' and path == '/email-classify':
+        return handle_email_classify(event)
     else:
         return {
             "statusCode": 404,
@@ -709,7 +885,7 @@ def handle_get_emails(event):
             "body": json.dumps({"message": "Failed to fetch data.", "error": str(e)})
         }
 
-def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
+def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, category_catalog):
     """Fetch and store new emails for one connected Gmail account.
     Instead of checking every fetched message against DynamoDB, we keep a per-account watermark
     (last_synced_message_id/last_synced_at, mutated in place on `account` \u2014 sync_user_emails persists
@@ -788,13 +964,13 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog):
             'bodyHtml':      body_html
         })
 
-    new_emails = finalize_batch(user_id, pending, label_catalog)
+    new_emails = finalize_batch(user_id, pending, label_catalog, category_catalog)
     if new_emails:
         account['last_synced_message_id'] = new_message_ids[0]
         account['last_synced_at'] = newest_received_at
     return new_emails, len(new_emails)
 
-def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
+def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, category_catalog):
     """Fetch and store new emails for one connected Outlook account via Microsoft Graph.
     Same watermark approach as the Gmail path — see its docstring. Graph's receivedDateTime filter is
     reliably second-precise (unlike Gmail's day-level after:), but we still buffer it and confirm the
@@ -869,13 +1045,13 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog):
             'bodyHtml':      body_html
         })
 
-    new_emails = finalize_batch(user_id, pending, label_catalog)
+    new_emails = finalize_batch(user_id, pending, label_catalog, category_catalog)
     if new_emails:
         account['last_synced_message_id'] = new_messages[0]['id']
         account['last_synced_at'] = new_messages[0].get('receivedDateTime') or account.get('last_synced_at')
     return new_emails, len(new_emails)
 
-def finalize_batch(user_id, pending, label_catalog):
+def finalize_batch(user_id, pending, label_catalog, category_catalog):
     """Shared tail for both Gmail and Outlook sync: classifies each new email (summary + Maily labels
     + smart-category flag) in one combined batched call, persists it, then runs whatever got flagged
     for a smart category through extraction + matching/merging (see process_smart_category_candidates)."""
@@ -883,7 +1059,7 @@ def finalize_batch(user_id, pending, label_catalog):
         return []
 
     classifications = classify_emails_batch(
-        [{'subject': p['subject'], 'snippet': p['content']} for p in pending], label_catalog
+        [{'subject': p['subject'], 'snippet': p['content']} for p in pending], label_catalog, category_catalog
     )
 
     new_emails = []
@@ -901,15 +1077,15 @@ def finalize_batch(user_id, pending, label_catalog):
             candidates.append((item, result['smartCategory']))
 
     if candidates:
-        process_smart_category_candidates(user_id, candidates)
+        process_smart_category_candidates(user_id, candidates, category_catalog)
 
     return new_emails
 
-def sync_single_account(user_id, account, fetch_limit, label_catalog):
+def sync_single_account(user_id, account, fetch_limit, label_catalog, category_catalog):
     """Fetch and store emails for one connected email account, dispatching by provider."""
     if account.get('provider') == 'outlook':
-        return sync_single_outlook_account(user_id, account, fetch_limit, label_catalog)
-    return sync_single_gmail_account(user_id, account, fetch_limit, label_catalog)
+        return sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, category_catalog)
+    return sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, category_catalog)
 
 
 def sync_user_emails(user_id, user_record):
@@ -920,6 +1096,7 @@ def sync_user_emails(user_id, user_record):
     accounts = user_record.get('email_accounts', [])
     fetch_limit = int(user_record.get('email_fetch_limit', 10))
     label_catalog = get_label_catalog(user_id)  # computed once per user, reused across all their accounts
+    category_catalog = get_category_type_catalog(user_id)  # same idea: built-ins + this user's custom types
 
     new_count = 0
     watermark_advanced = False
@@ -927,7 +1104,7 @@ def sync_user_emails(user_id, user_record):
         if not account.get('access_token'):
             continue
         before = (account.get('last_synced_message_id'), account.get('last_synced_at'))
-        _, count = sync_single_account(user_id, account, fetch_limit, label_catalog)
+        _, count = sync_single_account(user_id, account, fetch_limit, label_catalog, category_catalog)
         new_count += count
         if (account.get('last_synced_message_id'), account.get('last_synced_at')) != before:
             watermark_advanced = True
@@ -941,65 +1118,84 @@ def sync_user_emails(user_id, user_record):
 
     return new_count
 
-def process_smart_category_candidates(user_id, candidates):
+def process_smart_category_candidates(user_id, candidates, category_catalog):
     """Extracts structured fields for each smart-category-flagged email and merges it into a tracked
     Maily-CategoryItems row (creating one if nothing existing matches). Grouped by category type,
     processed oldest-email-first so e.g. an "order confirmed" email creates the item before a later
-    "shipped" email tries to merge into it. See CATEGORY_TYPES for the per-category schema/matchKeys."""
+    "shipped" email tries to merge into it. See category_catalog for the per-category schema/matchKeys."""
     by_type = {}
     for item, category_type in candidates:
         by_type.setdefault(category_type, []).append(item)
 
     for category_type, items in by_type.items():
-        items.sort(key=lambda i: i.get('receivedAt', ''))
+        schema = category_catalog.get(category_type)
+        if not schema:
+            continue  # category type no longer exists (e.g. deleted between classify and here)
 
-        extracted_list = extract_category_fields_batch(
-            [{'subject': i['subject'], 'snippet': i['content']} for i in items], category_type
+        items.sort(key=lambda i: i.get('receivedAt', ''))
+        extracted_list = _extract_fields_with_schema(
+            [{'subject': i['subject'], 'snippet': i['content']} for i in items], schema
         )
 
-        existing_items = category_items_table.query(
-            IndexName='categoryType-index',
-            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id) &
-                                    boto3.dynamodb.conditions.Key('categoryType').eq(category_type)
-        ).get('Items', [])
-
-        match_keys = CATEGORY_TYPES[category_type]['matchKeys']
+        match_keys = schema.get('matchKeys') or []
+        existing_items = []
+        if match_keys:
+            existing_items = category_items_table.query(
+                IndexName='categoryType-index',
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id) &
+                                        boto3.dynamodb.conditions.Key('categoryType').eq(category_type)
+            ).get('Items', [])
 
         for item, extracted in zip(items, extracted_list):
-            matched = _find_deterministic_match(existing_items, extracted, match_keys)
-            match_method = 'deterministic' if matched else None
-            if not matched and existing_items:
-                matched = ai_match_category_item(extracted, item.get('summary', ''), existing_items, category_type)
-                match_method = 'ai' if matched else 'ai-no-match'
+            match_and_save_category_item(user_id, item, extracted, category_type, schema, existing_items)
 
-            print(f"category-match emailId={item['emailId']} extracted={extracted} "
-                  f"result={('existing:' + matched['itemId']) if matched else 'new-item'} via={match_method or 'no-existing-items'}")
+def match_and_save_category_item(user_id, item, extracted, category_type, schema, existing_items):
+    """Matches one email's already-extracted fields against existing_items — a list this function may
+    append a freshly-created item onto, so later calls against the same list (e.g. later emails in the
+    same sync batch) can match against it too — then persists the tracked category item and sets
+    categoryItemId on the source email. Shared by sync-time batch processing and manual single-email
+    classification (POST /email-classify), so a manual assignment goes through the exact same real
+    extraction/matching pipeline as an AI-flagged one, not just a label slapped on."""
+    match_keys = schema.get('matchKeys') or []
+    matched = None
+    match_method = 'no-match-keys'
+    if match_keys:
+        matched = _find_deterministic_match(existing_items, extracted, match_keys)
+        match_method = 'deterministic' if matched else None
+        if not matched and existing_items:
+            matched = ai_match_category_item(extracted, item.get('summary', ''), existing_items, category_type, {category_type: schema})
+            match_method = 'ai' if matched else 'ai-no-match'
 
-            now = datetime.now(timezone.utc).isoformat()
-            received_at = item.get('receivedAt') or now
+    print(f"category-match emailId={item['emailId']} extracted={extracted} "
+          f"result={('existing:' + matched['itemId']) if matched else 'new-item'} via={match_method}")
 
-            if matched:
-                _merge_into_category_item(matched, extracted, item['emailId'], received_at, now)
-                target = matched
-            else:
-                target = {
-                    'userId': user_id,
-                    'itemId': f"{category_type}#{uuid.uuid4().hex[:12]}",
-                    'categoryType': category_type,
-                    'fields': {k: v for k, v in extracted.items() if v},
-                    'contributingEmailIds': [item['emailId']],
-                    'createdAt': now,
-                    'updatedAt': now,
-                    'lastUpdatedFromEmailAt': received_at,
-                }
-                existing_items.append(target)  # so later emails in this same batch can also match against it
+    now = datetime.now(timezone.utc).isoformat()
+    received_at = item.get('receivedAt') or now
 
-            category_items_table.put_item(Item=target)
-            table.update_item(
-                Key={'userId': user_id, 'emailId': item['emailId']},
-                UpdateExpression='SET categoryItemId = :c',
-                ExpressionAttributeValues={':c': target['itemId']}
-            )
+    if matched:
+        _merge_into_category_item(matched, extracted, item['emailId'], received_at, now, schema)
+        target = matched
+    else:
+        target = {
+            'userId': user_id,
+            'itemId': f"{category_type}#{uuid.uuid4().hex[:12]}",
+            'categoryType': category_type,
+            'fields': {k: v for k, v in extracted.items() if v},
+            'contributingEmailIds': [item['emailId']],
+            'createdAt': now,
+            'updatedAt': now,
+            'lastUpdatedFromEmailAt': received_at,
+        }
+        if match_keys:
+            existing_items.append(target)  # so later emails in this same batch can also match against it
+
+    category_items_table.put_item(Item=target)
+    table.update_item(
+        Key={'userId': user_id, 'emailId': item['emailId']},
+        UpdateExpression='SET categoryItemId = :c',
+        ExpressionAttributeValues={':c': target['itemId']}
+    )
+    return target
 
 def _find_deterministic_match(existing_items, extracted, match_keys):
     for key in match_keys:
@@ -1011,15 +1207,25 @@ def _find_deterministic_match(existing_items, extracted, match_keys):
                 return existing
     return None
 
-def _merge_into_category_item(target, extracted, email_id, received_at, now):
-    # Only let this email's values overwrite the item's fields if it's at least as recent as
-    # whatever last updated it — guards against an out-of-order email regressing e.g. delivered -> shipped.
+def _merge_into_category_item(target, extracted, email_id, received_at, now, schema):
+    fields = target.setdefault('fields', {})
+    sticky_keys = {f['key'] for f in schema.get('fields', []) if f.get('sticky')}
+
+    # Sticky fields are set once (first email to report a value wins) and never overwritten after
+    # that, regardless of email recency — e.g. "merchant" shouldn't flip if a later email omits it.
+    for key in sticky_keys:
+        if not fields.get(key) and extracted.get(key):
+            fields[key] = extracted[key]
+
+    # Non-sticky fields keep the original recency-gated overwrite behavior: only let this email's
+    # values in if it's at least as recent as whatever last updated the item — guards against an
+    # out-of-order email regressing e.g. delivered -> shipped.
     if received_at >= target.get('lastUpdatedFromEmailAt', ''):
-        fields = target.setdefault('fields', {})
         for key, value in extracted.items():
-            if value:
+            if value and key not in sticky_keys:
                 fields[key] = value
         target['lastUpdatedFromEmailAt'] = received_at
+
     if email_id not in target.get('contributingEmailIds', []):
         target.setdefault('contributingEmailIds', []).append(email_id)
     target['updatedAt'] = now
@@ -1460,8 +1666,8 @@ def handle_delete_label(event):
         print(f"Error deleting label: {str(e)}")
         return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while deleting label", "error": str(e)})}
 
-def _serialize_category_item(item):
-    is_complete, is_at_risk = evaluate_category_item_state(item.get('categoryType'), item.get('fields', {}))
+def _serialize_category_item(item, category_catalog):
+    is_complete, is_at_risk = evaluate_category_item_state(item.get('categoryType'), item.get('fields', {}), category_catalog)
     return {**item, 'isComplete': is_complete, 'isAtRisk': is_at_risk}
 
 def handle_list_category_items(event):
@@ -1471,6 +1677,7 @@ def handle_list_category_items(event):
         if not user_id:
             return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
 
+        category_catalog = get_category_type_catalog(user_id)
         query_params = event.get('queryStringParameters') or {}
         category_type = query_params.get('type')
 
@@ -1490,7 +1697,7 @@ def handle_list_category_items(event):
                 response = category_items_table.query(KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id), **kwargs)
             items.extend(response.get('Items', []))
 
-        items = [_serialize_category_item(i) for i in items]
+        items = [_serialize_category_item(i, category_catalog) for i in items]
 
         return {
             "statusCode": 200,
@@ -1525,14 +1732,449 @@ def handle_get_category_item(event):
                 emails.append(email_item)
         emails.sort(key=lambda e: e.get('receivedAt', ''))
 
+        category_catalog = get_category_type_catalog(user_id)
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"item": _serialize_category_item(item), "emails": emails}, ensure_ascii=False, cls=DecimalEncoder)
+            "body": json.dumps({"item": _serialize_category_item(item, category_catalog), "emails": emails}, ensure_ascii=False, cls=DecimalEncoder)
         }
     except Exception as e:
         print(f"Error fetching category item: {str(e)}")
         return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while fetching smart category item", "error": str(e)})}
+
+def handle_list_category_types(event):
+    """Lists this user's full category-type catalog (built-ins + their own custom ones), each tagged
+    with an id and isBuiltIn — this is what the frontend uses instead of a hardcoded metadata table."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        custom = category_types_table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id)
+        ).get('Items', [])
+
+        category_types = [
+            {**_category_type_row_to_schema(schema), 'id': key, 'isBuiltIn': True}
+            for key, schema in CATEGORY_TYPES.items()
+        ] + [
+            {**_category_type_row_to_schema(row), 'id': row['categoryTypeId'], 'isBuiltIn': False}
+            for row in custom
+        ]
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"categoryTypes": category_types}, ensure_ascii=False, cls=DecimalEncoder)
+        }
+    except Exception as e:
+        print(f"Error listing category types: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while listing category types", "error": str(e)})}
+
+def _build_category_generation_prompt(description, reference_emails, current_draft, instruction):
+    type_list = ", ".join(sorted(CATEGORY_FIELD_TYPES))
+    rule_help = (
+        '"field_equals": {"field": "<fieldKey>", "values": ["<value>", ...]} (true once the field '
+        'equals one of these values), or "date_passed_without": {"dateField": "<fieldKey>", '
+        '"field": "<fieldKey>", "values": ["<value>", ...]} (true once dateField is in the past and '
+        'field still has not reached one of values)'
+    )
+    schema_shape = (
+        '{"label": "...", "icon": "<one emoji>", "classifierDescription": "...", '
+        '"fields": [{"key": "camelCaseKey", "label": "...", "type": "' + type_list + '", '
+        '"hint": "optional", "values": ["..."] (enum fields only), "sticky": true|false (optional, '
+        'means this field is set once and should never be overwritten later)}, ...], '
+        '"matchKeys": ["fieldKey", ...] (0-2 keys that uniquely identify one tracked item, or [] if '
+        'there is no natural identifier and every matching email should become its own tracked item), '
+        '"titleTemplate": "e.g. {merchant} — {orderDescription}", "primaryDateField": "a date fieldKey '
+        'or empty", "cardFields": ["fieldKey", ...] (1-2 keys to show on a compact summary card), '
+        '"completionRule": {...} or null, "atRiskRule": {...} or null}'
+    )
+
+    if current_draft is not None:
+        return (
+            f"You are refining a draft email-category schema for a personal email assistant. "
+            f"Here is the current draft:\n{json.dumps(current_draft, ensure_ascii=False)}\n\n"
+            f"The user asked for this change: \"{instruction}\"\n\n"
+            f"Produce a full revised draft (not a diff/patch) using at most 8 fields, chosen only from "
+            f"these field types: {type_list}. Rule types, if used: {rule_help}. "
+            f'Respond with a JSON object of exactly this shape: {schema_shape}'
+        )
+
+    ref_block = ""
+    if reference_emails:
+        ref_lines = "\n\n".join(
+            f"Example email {i + 1}:\nSubject: {e['subject']}\nContent: {e['snippet']}"
+            for i, e in enumerate(reference_emails)
+        )
+        ref_block = f"\n\nHere are real example emails the user picked to ground this category:\n{ref_lines}"
+
+    return (
+        f"You are designing an email-category schema for a personal email assistant, from the user's "
+        f"own description of what they want to track: \"{description}\"{ref_block}\n\n"
+        f"Design at most 8 fields, chosen only from these field types: {type_list}. Rule types, if used "
+        f"for completionRule/atRiskRule: {rule_help}. matchKeys should be 0-2 field keys that uniquely "
+        f"identify one tracked thing (e.g. an order/confirmation number) — use [] if there's no natural "
+        f"identifier. "
+        f'Respond with a JSON object of exactly this shape: {schema_shape}'
+    )
+
+def _call_category_generation_ai(prompt):
+    api_key = get_secrets()['OPENAI_API_KEY']
+    body = json.dumps({
+        "model": "gpt-4.1-nano",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1200,
+        "response_format": {"type": "json_object"}
+    }).encode('utf-8')
+    req = urllib.request.Request('https://api.openai.com/v1/chat/completions', data=body, method='POST')
+    req.add_header('Authorization', f'Bearer {api_key}')
+    req.add_header('Content-Type', 'application/json')
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+    raw_content = result['choices'][0]['message']['content'].strip()
+    try:
+        return json.loads(raw_content)
+    except (json.JSONDecodeError, AttributeError):
+        return {}
+
+def handle_generate_category_draft(event):
+    """Category Wizard stage 3/4: proposes a fresh draft schema from a free-text description
+    (optionally grounded by up to 2 reference emails), or revises an existing draft per a follow-up
+    instruction when currentDraft+instruction are given instead of description. If reference emails
+    were provided, also runs real extraction against them so the wizard's live preview shows real
+    data — the per-email results are returned so the client can echo them back unchanged at creation
+    time (POST /category-types) without triggering a second AI call."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        description = (body.get('description') or '').strip()
+        current_draft = body.get('currentDraft')
+        instruction = (body.get('instruction') or '').strip()
+        reference_email_ids = (body.get('referenceEmailIds') or [])[:2]
+
+        if not description and not (current_draft and instruction):
+            return {"statusCode": 400, "body": json.dumps({"error": "Provide 'description', or 'currentDraft' + 'instruction' to refine"})}
+
+        reference_email_rows = []
+        for email_id in reference_email_ids:
+            email_item = table.get_item(Key={'userId': user_id, 'emailId': email_id}).get('Item')
+            if email_item:
+                reference_email_rows.append(email_item)
+        reference_snippets = [{'subject': r.get('subject', ''), 'snippet': r.get('content', '')} for r in reference_email_rows]
+
+        prompt = _build_category_generation_prompt(description, reference_snippets, current_draft, instruction)
+        raw_draft = _call_category_generation_ai(prompt)
+        schema, warnings = _sanitize_category_draft(raw_draft)
+
+        reference_results = []
+        merged_preview_fields = {}
+        if reference_email_rows and schema['fields']:
+            extracted_list = _extract_fields_with_schema(reference_snippets, schema)
+            for row, extracted in zip(reference_email_rows, extracted_list):
+                reference_results.append({'emailId': row['emailId'], 'extracted': extracted})
+                for k, v in extracted.items():
+                    if v:
+                        merged_preview_fields[k] = v
+
+        preview_item = None
+        if merged_preview_fields:
+            is_complete = evaluate_category_rule(schema.get('completionRule'), merged_preview_fields)
+            is_at_risk = (not is_complete) and evaluate_category_rule(schema.get('atRiskRule'), merged_preview_fields)
+            preview_item = {'fields': merged_preview_fields, 'isComplete': is_complete, 'isAtRisk': is_at_risk}
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "draft": schema,
+                "referenceEmails": reference_results,
+                "previewItem": preview_item,
+                "warnings": warnings
+            }, ensure_ascii=False)
+        }
+    except Exception as e:
+        print(f"Error generating category draft: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while generating category draft", "error": str(e)})}
+
+def handle_create_category_type(event):
+    """Approves a wizard draft (stage 5) into a persisted custom category type. If the draft was
+    generated against reference emails, the client echoes back that same generate-time extraction
+    (referenceEmails, as returned by POST /category-types/generate) so those emails can be finalized
+    as the new type's first tracked item(s) immediately — no extra AI call, no empty-category moment."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        schema, warnings = _sanitize_category_draft(body.get('draft'))
+        if not schema['fields']:
+            return {"statusCode": 400, "body": json.dumps({"error": "Category must have at least one field", "warnings": warnings})}
+
+        category_type_id = f"custom#{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc).isoformat()
+        row = {
+            'userId': user_id,
+            'categoryTypeId': category_type_id,
+            'schemaVersion': 1,
+            'createdAt': now,
+            'updatedAt': now,
+            **schema,
+        }
+        category_types_table.put_item(Item=row)
+
+        reference_emails = (body.get('referenceEmails') or [])[:2]
+        if reference_emails:
+            pairs = []
+            for ref in reference_emails:
+                email_id = ref.get('emailId')
+                extracted = _normalize_extracted_row(ref.get('extracted'), schema)
+                email_item = email_id and table.get_item(Key={'userId': user_id, 'emailId': email_id}).get('Item')
+                if email_item and extracted:
+                    pairs.append((email_item, extracted))
+            pairs.sort(key=lambda pair: pair[0].get('receivedAt', ''))
+            existing_items = []
+            for email_item, extracted in pairs:
+                match_and_save_category_item(user_id, email_item, extracted, category_type_id, schema, existing_items)
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "categoryType": {**schema, "id": category_type_id, "isBuiltIn": False, "schemaVersion": 1},
+                "warnings": warnings
+            }, ensure_ascii=False)
+        }
+    except Exception as e:
+        print(f"Error creating category type: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while creating category type", "error": str(e)})}
+
+def handle_replace_category_type(event):
+    """Wizard 'replace' mode: overwrites a custom category type's schema in place (same id, bumped
+    schemaVersion). Existing tracked Maily-CategoryItems rows of this type are left untouched — only
+    future extraction/matching uses the new schema, per the immutable-structure design (a full wizard
+    re-run is required for any structural change; PATCH only covers non-structural tweaks)."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        category_type_id = body.get('categoryTypeId')
+        if not category_type_id or not category_type_id.startswith('custom#'):
+            return {"statusCode": 400, "body": json.dumps({"error": "categoryTypeId must refer to a custom category type"})}
+
+        existing = category_types_table.get_item(Key={'userId': user_id, 'categoryTypeId': category_type_id}).get('Item')
+        if not existing:
+            return {"statusCode": 404, "body": json.dumps({"error": "Category type not found"})}
+
+        schema, warnings = _sanitize_category_draft(body.get('draft'))
+        if not schema['fields']:
+            return {"statusCode": 400, "body": json.dumps({"error": "Category must have at least one field", "warnings": warnings})}
+
+        now = datetime.now(timezone.utc).isoformat()
+        new_version = int(existing.get('schemaVersion', 1)) + 1
+        row = {
+            'userId': user_id,
+            'categoryTypeId': category_type_id,
+            'schemaVersion': new_version,
+            'createdAt': existing.get('createdAt', now),
+            'updatedAt': now,
+            **schema,
+        }
+        category_types_table.put_item(Item=row)
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "categoryType": {**schema, "id": category_type_id, "isBuiltIn": False, "schemaVersion": new_version},
+                "warnings": warnings
+            }, ensure_ascii=False)
+        }
+    except Exception as e:
+        print(f"Error replacing category type: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while replacing category type", "error": str(e)})}
+
+def handle_patch_category_type(event):
+    """Lightweight, structure-preserving edits only: append values to an existing enum field, and/or
+    append more keyword text to the classifier description or one field's hint (to help the AI catch
+    more matching emails). Anything structural (add/remove/retype a field, change matchKeys/rules)
+    is out of scope here by design — that requires PUT (the wizard's 'replace' mode)."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        category_type_id = body.get('categoryTypeId')
+        if not category_type_id or not category_type_id.startswith('custom#'):
+            return {"statusCode": 400, "body": json.dumps({"error": "categoryTypeId must refer to a custom category type"})}
+
+        existing = category_types_table.get_item(Key={'userId': user_id, 'categoryTypeId': category_type_id}).get('Item')
+        if not existing:
+            return {"statusCode": 404, "body": json.dumps({"error": "Category type not found"})}
+
+        fields = existing.get('fields', [])
+        changed = False
+
+        add_enum_values = body.get('addEnumValues') or {}
+        if add_enum_values.get('fieldKey'):
+            for f in fields:
+                if f['key'] == add_enum_values['fieldKey'] and f.get('type') == 'enum':
+                    new_values = [str(v).strip() for v in (add_enum_values.get('values') or []) if str(v).strip()]
+                    existing_values = set(f.get('values', []))
+                    additions = [v for v in new_values if v not in existing_values]
+                    if additions:
+                        f['values'] = f.get('values', []) + additions
+                        changed = True
+
+        classifier_description = existing.get('classifierDescription', '')
+        append_classifier_hint = (body.get('appendClassifierHint') or '').strip()
+        if append_classifier_hint:
+            classifier_description = (classifier_description + ' ' + append_classifier_hint).strip()[:500]
+            changed = True
+
+        append_field_hint = body.get('appendFieldHint') or {}
+        if append_field_hint.get('fieldKey'):
+            hint_text = (append_field_hint.get('hint') or '').strip()
+            if hint_text:
+                for f in fields:
+                    if f['key'] == append_field_hint['fieldKey']:
+                        f['hint'] = ((f.get('hint') or '') + ' ' + hint_text).strip()[:300]
+                        changed = True
+
+        if not changed:
+            return {"statusCode": 400, "body": json.dumps({"error": "Nothing to update — PATCH only appends enum values or hint text"})}
+
+        now = datetime.now(timezone.utc).isoformat()
+        category_types_table.update_item(
+            Key={'userId': user_id, 'categoryTypeId': category_type_id},
+            UpdateExpression='SET #f = :f, classifierDescription = :cd, updatedAt = :u',
+            ExpressionAttributeNames={'#f': 'fields'},
+            ExpressionAttributeValues={':f': fields, ':cd': classifier_description, ':u': now}
+        )
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"id": category_type_id, "fields": fields, "classifierDescription": classifier_description}, ensure_ascii=False)
+        }
+    except Exception as e:
+        print(f"Error patching category type: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while patching category type", "error": str(e)})}
+
+def handle_delete_category_type(event):
+    """Deletes a custom category type and cascades to delete all its tracked Maily-CategoryItems rows
+    (mirrors handle_disconnect_account's email cascade). Emails that reference the deleted type via
+    categoryItemId are left with a dangling reference — same accepted v1 limitation already documented
+    for label deletion."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        category_type_id = body.get('categoryTypeId')
+        if not category_type_id or not category_type_id.startswith('custom#'):
+            return {"statusCode": 400, "body": json.dumps({"error": "categoryTypeId must refer to a custom category type"})}
+
+        category_types_table.delete_item(Key={'userId': user_id, 'categoryTypeId': category_type_id})
+
+        items = category_items_table.query(
+            IndexName='categoryType-index',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id) &
+                                    boto3.dynamodb.conditions.Key('categoryType').eq(category_type_id)
+        ).get('Items', [])
+        with category_items_table.batch_writer() as batch:
+            for item in items:
+                batch.delete_item(Key={'userId': user_id, 'itemId': item['itemId']})
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"message": "Category type deleted", "id": category_type_id})
+        }
+    except Exception as e:
+        print(f"Error deleting category type: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while deleting category type", "error": str(e)})}
+
+def handle_email_classify(event):
+    """Manual classification of one already-synced email. Label changes are a direct update (no AI
+    call — the user picked them explicitly). A categoryType assignment runs that single email through
+    the exact same real extraction+matching pipeline sync-time auto-classification uses
+    (match_and_save_category_item) — never just a label slapped on. categoryType: null clears the
+    email's categoryItemId (the orphaned tracked item, if any, is left as-is)."""
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {"statusCode": 401, "body": json.dumps({"error": "Unauthorized. Could not identify user."})}
+
+        body = json.loads(event.get('body', '{}'))
+        email_id = body.get('emailId')
+        if not email_id:
+            return {"statusCode": 400, "body": json.dumps({"error": "Missing required field: emailId"})}
+
+        email_item = table.get_item(Key={'userId': user_id, 'emailId': email_id}).get('Item')
+        if not email_item:
+            return {"statusCode": 404, "body": json.dumps({"error": "Email not found"})}
+
+        add_labels = body.get('addLabels') or []
+        remove_labels = body.get('removeLabels') or []
+        if add_labels or remove_labels:
+            current_labels = (set(email_item.get('labels', [])) | set(add_labels)) - set(remove_labels)
+            table.update_item(
+                Key={'userId': user_id, 'emailId': email_id},
+                UpdateExpression='SET labels = :l',
+                ExpressionAttributeValues={':l': list(current_labels)}
+            )
+            email_item['labels'] = list(current_labels)
+
+        result_category_item = None
+        if 'categoryType' in body:
+            category_type = body.get('categoryType')
+            if category_type is None:
+                table.update_item(Key={'userId': user_id, 'emailId': email_id}, UpdateExpression='REMOVE categoryItemId')
+            else:
+                category_catalog = get_category_type_catalog(user_id)
+                schema = category_catalog.get(category_type)
+                if not schema:
+                    return {"statusCode": 400, "body": json.dumps({"error": "Unknown categoryType"})}
+
+                extracted_list = _extract_fields_with_schema(
+                    [{'subject': email_item.get('subject', ''), 'snippet': email_item.get('content', '')}], schema
+                )
+                extracted = extracted_list[0] if extracted_list else {}
+
+                match_keys = schema.get('matchKeys') or []
+                existing_items = []
+                if match_keys:
+                    existing_items = category_items_table.query(
+                        IndexName='categoryType-index',
+                        KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(user_id) &
+                                                boto3.dynamodb.conditions.Key('categoryType').eq(category_type)
+                    ).get('Items', [])
+
+                result_category_item = match_and_save_category_item(
+                    user_id, email_item, extracted, category_type, schema, existing_items
+                )
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({
+                "emailId": email_id,
+                "labels": email_item.get('labels', []),
+                "categoryItem": result_category_item
+            }, ensure_ascii=False, cls=DecimalEncoder)
+        }
+    except Exception as e:
+        print(f"Error classifying email: {str(e)}")
+        return {"statusCode": 500, "body": json.dumps({"message": "Internal server error while classifying email", "error": str(e)})}
 
 def handle_get_stats(event):
     try:

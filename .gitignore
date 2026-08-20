@@ -21,3 +21,10 @@ Infrastructure/.terraform/
 
 # AWS session credentials (local only, never commit)
 aws-session.ps1
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Local planning doc, not for the repo
+IMPLEMENTATION_PLAN.md
