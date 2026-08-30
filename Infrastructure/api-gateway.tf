@@ -235,6 +235,15 @@ resource "aws_apigatewayv2_route" "smart_category_route" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
+resource "aws_apigatewayv2_route" "smart_category_patch_route" {
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "PATCH /smart-category"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
 resource "aws_apigatewayv2_route" "category_types_list_route" {
     api_id    = aws_apigatewayv2_api.maily_http_api.id
     route_key = "GET /category-types"
@@ -283,6 +292,33 @@ resource "aws_apigatewayv2_route" "category_types_patch_route" {
 resource "aws_apigatewayv2_route" "category_types_delete_route" {
     api_id    = aws_apigatewayv2_api.maily_http_api.id
     route_key = "DELETE /category-types"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "travel_trips_list_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "GET /travel-trips"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "travel_trips_create_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "POST /travel-trips"
+    target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+    authorization_type = "JWT"
+    authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
+resource "aws_apigatewayv2_route" "travel_trips_delete_route" {
+    api_id    = aws_apigatewayv2_api.maily_http_api.id
+    route_key = "DELETE /travel-trips"
     target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
 
     authorization_type = "JWT"

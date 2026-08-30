@@ -1805,6 +1805,84 @@
   color: var(--text-secondary);
 }
 
+.email-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.email-picker-panel {
+  background: var(--bg);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-glow);
+  width: 100%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.email-picker-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.email-picker-actions {
+  padding: 16px 24px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+
+.email-item-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.category-type-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.category-type-row-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.category-type-row-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.category-type-row-count {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.category-type-row-header .btn-disconnect {
+  margin-left: auto;
+}
+
+.category-type-row-preview {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.category-type-row-preview .category-item-card {
+  flex: 0 0 260px;
+}
+
 .category-completed-section {
   margin-top: 24px;
 }
@@ -1870,6 +1948,35 @@
 [data-theme="midnight"] .status-badge.status-at-risk {
   background-color: #1f0a0a;
   color: #f87171;
+}
+
+.status-badge.status-trashed {
+  background-color: #f1f5f9;
+  color: #64748b;
+}
+
+[data-theme="midnight"] .status-badge.status-trashed {
+  background-color: #1e293b;
+  color: #94a3b8;
+}
+
+.category-item-actions {
+  display: flex;
+  gap: 10px;
+  padding: 0 1.5rem 1.25rem;
+}
+
+/* Enum-field badges — the color is deliberately generic (not per-value), since a value's meaning is
+   only known to the schema that declared it; a "delivered" vs. "at risk" distinction is still carried
+   separately by CategoryItemStatusBadge above this. */
+.field-badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-size: 0.85em;
+  font-weight: 600;
 }
 
 /* ── Manual classify menu (email detail view) ── */
@@ -2014,23 +2121,44 @@
   margin: 0 0 6px;
 }
 
-.wizard-review-columns {
+.wizard-tips-list {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  color: var(--text-secondary);
+  font-size: 0.86em;
+  line-height: 1.6;
+}
+
+.wizard-preview-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 320px) 1fr;
-  gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
   align-items: start;
 }
 
-.wizard-preview-column h4,
-.wizard-editor-column h4 {
-  margin: 0 0 10px;
-  color: var(--text-primary);
+.wizard-preview-item {
+  display: flex;
+  flex-direction: column;
 }
 
-.wizard-editor-column {
+.wizard-preview-detail {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+
+.wizard-details-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  max-width: 640px;
+}
+
+.wizard-details-section h4 {
+  margin: 14px 0 4px;
+  color: var(--text-primary);
 }
 
 .wizard-field-label {
@@ -2040,23 +2168,42 @@
   margin-top: 8px;
 }
 
-.wizard-field-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
+.wizard-rule-line {
+  margin: 0 0 6px;
+  font-size: 0.9em;
+  color: var(--text-primary);
 }
 
-.wizard-field-toggle {
+.wizard-fields-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wizard-field-summary-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.8em;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  cursor: pointer;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88em;
+}
+
+.wizard-field-summary-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.wizard-field-summary-type {
+  color: var(--text-muted);
+}
+
+.wizard-field-summary-tag {
+  padding: 0.1rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 0.78em;
 }
 
 .wizard-refine-row {
@@ -2065,12 +2212,6 @@
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid var(--border);
-}
-
-@media (max-width: 900px) {
-  .wizard-review-columns {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* ── Login screen ──

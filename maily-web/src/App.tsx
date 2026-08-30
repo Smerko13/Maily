@@ -3,6 +3,9 @@ import { Authenticator } from "@aws-amplify/ui-react";
 import { fetchAuthSession } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
 import CategoryWizard from './components/CategoryWizard';
+import EmailSelectionPicker from './components/EmailSelectionPicker';
+import TravelTripsView from './components/TravelTripsView';
+import { CategoryFieldValue, formatFieldValueText } from './components/fields/CategoryFieldValue';
 import {
   LayoutDashboard, Inbox as InboxIcon, Sparkles, Truck, BarChart3, Settings,
   LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, SquarePen,
@@ -61,6 +64,36 @@ function isCustomLabel(label: LabelDef): boolean {
   return label.id.startsWith('custom#');
 }
 
+// DynamoDB's Query returns items ordered by the emailId sort key (lexicographic, not chronological),
+// so the inbox has to be sorted client-side. Newest first; emails missing receivedAt sink to the bottom.
+export function sortEmailsByDate(emails: Email[]): Email[] {
+  return [...emails].sort((a, b) => {
+    const aTime = a.receivedAt ? new Date(a.receivedAt).getTime() : -Infinity;
+    const bTime = b.receivedAt ? new Date(b.receivedAt).getTime() : -Infinity;
+    return bTime - aTime;
+  });
+}
+
+// A card's actual placement in the UI: 'active'/'done' are either computed from the schema's
+// completionRule or forced by the mark-done/restore buttons; 'trashed' is always manual. Manual states
+// win over the computed one and never get reset by new email data merging in — see effectiveState.
+export type CategoryItemState = 'active' | 'done' | 'trashed';
+
+// A user-created "trip" wrapper for the built-in Travel category — just a name + date range. Which
+// items belong to it is never stored; it's computed (a travel item's startDate falling inside
+// [startDate, endDate]) so editing a trip's dates re-groups items with no migration. See tripForItem
+// in TravelTripsView.
+export interface TravelTrip {
+  tripId: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+}
+
+// The built-in category id this special trip-grouping UI applies to — everything else about "travel"
+// (fields, matchKeys, rules, extraction) is identical to any other category.
+export const TRAVEL_CATEGORY_TYPE_ID = 'travel';
+
 export interface CategoryItem {
   itemId: string;
   categoryType: string;
@@ -71,9 +104,15 @@ export interface CategoryItem {
   lastUpdatedFromEmailAt?: string;
   isComplete: boolean;
   isAtRisk: boolean;
+  manualState: 'done' | 'trashed' | null;
+  effectiveState: CategoryItemState;
 }
 
 export type CategoryFieldType = 'string' | 'number' | 'date' | 'enum' | 'boolean';
+
+// Optional display hint on top of `type`, driving which widget a field renders with — e.g. a number
+// field formatted "currency" shows as $42.99 instead of a bare 42.99. Must be valid for its own type.
+export type CategoryFieldFormat = 'currency' | 'percent' | 'url' | 'relative-date';
 
 export interface CategoryFieldDef {
   key: string;
@@ -82,13 +121,17 @@ export interface CategoryFieldDef {
   hint?: string;
   values?: string[];
   sticky?: boolean;
+  format?: CategoryFieldFormat;
 }
 
 export interface CategoryRule {
-  type: 'field_equals' | 'date_passed_without';
+  // "date_passed" is unconditional (a date has simply gone by, e.g. an event's date) — field/values
+  // don't apply to it. The other two both need a status field: "field_equals" alone, or
+  // "date_passed_without" for "overdue on a date without reaching that status yet".
+  type: 'field_equals' | 'date_passed_without' | 'date_passed';
   field?: string;
   dateField?: string;
-  values: string[];
+  values?: string[];
 }
 
 // The schema-driven metadata for one category type (built-in or custom), as returned by
@@ -101,6 +144,9 @@ export interface CategoryTypeMeta {
   classifierDescription: string;
   fields: CategoryFieldDef[];
   matchKeys: string[];
+  // "OR" (default): matching any one matchKeys field is enough to be the same item. "AND": every
+  // matchKeys field must match together — for categories where no single field is unique on its own.
+  keyMode: 'OR' | 'AND';
   titleTemplate: string;
   primaryDateField: string;
   cardFields: string[];
@@ -112,7 +158,7 @@ export interface CategoryTypeMeta {
 }
 
 export const FALLBACK_CATEGORY_TYPE_META: CategoryTypeMeta = {
-  id: '', label: '', icon: '🏷️', classifierDescription: '', fields: [], matchKeys: [],
+  id: '', label: '', icon: '🏷️', classifierDescription: '', fields: [], matchKeys: [], keyMode: 'OR',
   titleTemplate: '', primaryDateField: '', cardFields: [], completionRule: null, atRiskRule: null,
   automations: [], schemaVersion: 1, isBuiltIn: true,
 };
@@ -122,19 +168,27 @@ export function categoryTypeMeta(categoryType: string, catalog: Record<string, C
 }
 
 // Naive {fieldKey} placeholder substitution, deliberately not a full templating engine — also cleans
-// up leftover separators (e.g. a dangling " — ") left behind when a referenced field is empty.
-export function renderTitleTemplate(template: string, fields: CategoryItem['fields']): string {
+// up leftover separators (e.g. a dangling " — ") left behind when a referenced field is empty. Values
+// are formatted per their field def (so a date field shows "May 26, 2027, 8:30 PM", not a raw ISO
+// string with a literal "T" in it) — falls back to the raw value for a placeholder with no matching field.
+export function renderTitleTemplate(template: string, fields: CategoryItem['fields'], fieldDefs: CategoryFieldDef[]): string {
   if (!template) return '';
-  const rendered = template.replace(/\{(\w+)\}/g, (_, key) => fields[key] || '');
+  const rendered = template.replace(/\{(\w+)\}/g, (_, key) => {
+    const value = fields[key];
+    if (!value) return '';
+    const fieldDef = fieldDefs.find(f => f.key === key);
+    return fieldDef ? formatFieldValueText(fieldDef, value) : value;
+  });
   return rendered.replace(/^[\s—-]+|[\s—-]+$/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
 export function categoryItemTitle(meta: CategoryTypeMeta, fields: CategoryItem['fields']): string {
-  return renderTitleTemplate(meta.titleTemplate, fields) || meta.label || 'Untitled';
+  return renderTitleTemplate(meta.titleTemplate, fields, meta.fields) || meta.label || 'Untitled';
 }
 
 export function CategoryItemStatusBadge({ item }: { item: CategoryItem }) {
-  if (item.isComplete) return <span className="status-badge status-done">✅ Done</span>;
+  if (item.effectiveState === 'done') return <span className="status-badge status-done">✅ Done</span>;
+  if (item.effectiveState === 'trashed') return <span className="status-badge status-trashed">🗑️ Trashed</span>;
   if (item.isAtRisk) return <span className="status-badge status-at-risk">⚠️ At risk</span>;
   return <span className="status-badge status-in-progress">{item.fields.status || 'In progress'}</span>;
 }
@@ -142,22 +196,32 @@ export function CategoryItemStatusBadge({ item }: { item: CategoryItem }) {
 // Fully schema-driven: which lines appear on a card is driven by meta.cardFields (set either by the
 // built-in CATEGORY_TYPES definition, or by the user in the Category Wizard) rather than hardcoded
 // per-type JSX — this is what lets a wizard-created category render as well as the built-in ones.
+// Each value is rendered through CategoryFieldValue, which dispatches on the field's type/format
+// (currency, a link, a status badge, a relative date, ...) instead of always showing plain text.
 export function CategoryItemCard({ item, meta, onClick }: { item: CategoryItem; meta: CategoryTypeMeta; onClick: () => void }) {
   const primaryDate = meta.primaryDateField ? item.fields[meta.primaryDateField] : undefined;
-  const primaryDateLabel = meta.fields.find(f => f.key === meta.primaryDateField)?.label || 'Date';
+  const primaryDateField = meta.fields.find(f => f.key === meta.primaryDateField);
   return (
     <div className="category-item-card" onClick={onClick}>
       <div className="category-item-card-header">
         <span className="category-item-card-title">{meta.icon} {categoryItemTitle(meta, item.fields)}</span>
         <CategoryItemStatusBadge item={item} />
       </div>
-      {meta.cardFields.map(key => {
+      {meta.cardFields.filter(key => key !== meta.primaryDateField).map(key => {
         const value = item.fields[key];
         if (!value) return null;
-        const fieldLabel = meta.fields.find(f => f.key === key)?.label ?? key;
-        return <p key={key} className="category-item-card-line">{fieldLabel}: {value}</p>;
+        const fieldDef = meta.fields.find(f => f.key === key);
+        return (
+          <p key={key} className="category-item-card-line">
+            {fieldDef?.label ?? key}: {fieldDef ? <CategoryFieldValue fieldDef={fieldDef} value={value} /> : value}
+          </p>
+        );
       })}
-      {primaryDate && <p className="category-item-card-line">📅 {primaryDateLabel}: {primaryDate}</p>}
+      {primaryDate && (
+        <p className="category-item-card-line">
+          📅 {primaryDateField?.label || 'Date'}: {primaryDateField ? <CategoryFieldValue fieldDef={primaryDateField} value={primaryDate} /> : primaryDate}
+        </p>
+      )}
     </div>
   );
 }
@@ -273,6 +337,10 @@ function App() {
   const [categoryItems, setCategoryItems] = useState<CategoryItem[]>([]);
   const [categoryItemsLoading, setCategoryItemsLoading] = useState<boolean>(false);
   const [openedCategoryItem, setOpenedCategoryItem] = useState<CategoryItem | null>(null);
+  // Non-null = drilled into one category type's full active/done grid; null = the row-per-category
+  // overview. Independent of openedCategoryItem so "back" from an item detail returns to whichever of
+  // these the user came from (drill-in or the overview), not always the overview.
+  const [openedCategoryType, setOpenedCategoryType] = useState<string | null>(null);
   const [categoryItemEmails, setCategoryItemEmails] = useState<Email[]>([]);
   const [categoryItemLoading, setCategoryItemLoading] = useState<boolean>(false);
   const [returnToCategoryItemId, setReturnToCategoryItemId] = useState<string | null>(null);
@@ -283,6 +351,17 @@ function App() {
   // Non-null = the wizard panel is showing instead of the Smart Categories grid. 'replace' pre-loads
   // wizardExisting as the starting draft (editing an already-created custom category).
   const [categoryWizard, setCategoryWizard] = useState<{ mode: 'create' | 'replace'; existing?: CategoryTypeMeta } | null>(null);
+  // Wizard reference-email selection — lives here (not inside CategoryWizard) because it's shared with
+  // the full-inbox EmailSelectionPicker overlay below, a sibling of the wizard rather than a child.
+  const [categoryReferenceIds, setCategoryReferenceIds] = useState<string[]>([]);
+  const [emailPickerOpen, setEmailPickerOpen] = useState(false);
+  const [emailPickerSnapshot, setEmailPickerSnapshot] = useState<string[]>([]);
+  const MAX_CATEGORY_REFERENCE_EMAILS = 3;
+  const toggleCategoryReferenceId = (emailId: string) => setCategoryReferenceIds(prev =>
+    prev.includes(emailId)
+      ? prev.filter(id => id !== emailId)
+      : (prev.length < MAX_CATEGORY_REFERENCE_EMAILS ? [...prev, emailId] : prev)
+  );
   // Which email's manual-classify panel is expanded (inbox detail thread view). Only one open at a time.
   const [classifyMenuEmailId, setClassifyMenuEmailId] = useState<string | null>(null);
   const [classifySaving, setClassifySaving] = useState<boolean>(false);
@@ -445,7 +524,7 @@ function App() {
         const data = await response.json();
         // Update even on an empty result — a filtered account with zero matching emails is a valid,
         // real result and should clear the list, not silently leave the previous (unfiltered) one showing.
-        if (Array.isArray(data.emails)) setEmails(data.emails);
+        if (Array.isArray(data.emails)) setEmails(sortEmailsByDate(data.emails));
       } catch {
         // silently fail — the user can always click Sync manually
       }
@@ -1008,7 +1087,9 @@ function App() {
     }
   };
 
-  // Fetches this user's tracked smart-category items (currently just "delivery")
+  // Fetches this user's tracked smart-category items. The backend only ever returns active or done
+  // items per call (never trashed — those are soft-deleted and permanently hidden), so both states are
+  // fetched in parallel to populate the Active grid and the collapsible "Completed" section at once.
   const loadCategoryItems = async () => {
     setCategoryItemsLoading(true);
     try {
@@ -1016,17 +1097,54 @@ function App() {
       const token = session.tokens?.idToken?.toString();
       if (!token) throw new Error('No auth token available');
 
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/smart-categories`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
-      setCategoryItems(data.items || []);
+      const base = import.meta.env.VITE_API_BASE_URL;
+      const [activeRes, doneRes] = await Promise.all([
+        fetch(`${base}/smart-categories?state=active`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${base}/smart-categories?state=done`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      if (!activeRes.ok) throw new Error(`HTTP error! status: ${activeRes.status}`);
+      if (!doneRes.ok) throw new Error(`HTTP error! status: ${doneRes.status}`);
+      const activeData = await activeRes.json();
+      const doneData = await doneRes.json();
+      setCategoryItems([...(activeData.items || []), ...(doneData.items || [])]);
     } catch (error) {
       console.error('Error loading smart categories:', error);
       showToast('Failed to load smart categories. Please try again.', 'error');
     } finally {
       setCategoryItemsLoading(false);
+    }
+  };
+
+  // Mark done / restore to active / trash — the three manual card controls. manualState: null clears
+  // a "done" override back to active (governed by the schema's rule again); "trashed" has no restore
+  // button in this UI today (the backend endpoint itself is permissive — soft delete only — so adding
+  // one later needs no backend change), by design (see SMART_CATEGORIES_DESIGN.md).
+  const updateCategoryItemState = async (itemId: string, manualState: 'done' | 'trashed' | null) => {
+    try {
+      const session = await fetchAuthSession();
+      const token = session.tokens?.idToken?.toString();
+      if (!token) throw new Error('No auth token available');
+
+      const url = `${import.meta.env.VITE_API_BASE_URL}/smart-category?itemId=${encodeURIComponent(itemId)}`;
+      const response = await fetch(url, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manualState }),
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+      if (manualState === 'trashed') {
+        goBackToCategoryItems();
+        showToast('Card deleted', 'success');
+      } else {
+        const data = await response.json();
+        setOpenedCategoryItem(data.item);
+        showToast(manualState === 'done' ? 'Marked as done' : 'Moved back to active', 'success');
+      }
+      loadCategoryItems();
+    } catch (error) {
+      console.error('Error updating smart category item:', error);
+      showToast('Failed to update this item. Please try again.', 'error');
     }
   };
 
@@ -1078,7 +1196,7 @@ function App() {
       const data = await response.json();
 
       showToast(data.message, 'success');
-      if (data.emails) setEmails(data.emails);
+      if (data.emails) setEmails(sortEmailsByDate(data.emails));
     } catch (error) {
       console.error('Error fetching data from backend:', error);
       showToast('Error pulling data from backend', 'error');
@@ -1188,7 +1306,7 @@ function App() {
               <div onClick={() => { setActiveTab('drafting'); setSelectedEmailIndex(null); setDraft(''); }} className={`nav-item ${activeTab === 'drafting' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><Sparkles size={17} strokeWidth={2} /></span>Smart Drafting
               </div>
-              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>
+              <div onClick={() => { setActiveTab('categories'); setOpenedCategoryItem(null); setOpenedCategoryType(null); if (categoryItems.length === 0) loadCategoryItems(); }} className={`nav-item ${activeTab === 'categories' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><Truck size={17} strokeWidth={2} /></span>Smart Categories
               </div>
               <div onClick={() => { setActiveTab('stats'); if (!stats) fetchStats(); }} className={`nav-item ${activeTab === 'stats' ? 'active' : ''}`}>
@@ -1819,11 +1937,13 @@ function App() {
                   mode={categoryWizard.mode}
                   existingCategoryType={categoryWizard.existing}
                   emails={emails}
-                  accounts={connectedAccounts}
                   apiBaseUrl={import.meta.env.VITE_API_BASE_URL}
                   getAuthToken={async () => (await fetchAuthSession()).tokens?.idToken?.toString() ?? null}
-                  onClose={() => setCategoryWizard(null)}
-                  onSaved={() => { setCategoryWizard(null); loadCategoryTypeCatalog(); loadCategoryItems(); showToast('Category saved', 'success'); }}
+                  onClose={() => { setCategoryWizard(null); setCategoryReferenceIds([]); }}
+                  onSaved={() => { setCategoryWizard(null); setCategoryReferenceIds([]); loadCategoryTypeCatalog(); loadCategoryItems(); showToast('Category saved', 'success'); }}
+                  selectedReferenceIds={categoryReferenceIds}
+                  onOpenEmailPicker={() => { setEmailPickerSnapshot(categoryReferenceIds); setEmailPickerOpen(true); }}
+                  onRemoveReferenceId={id => setCategoryReferenceIds(prev => prev.filter(existingId => existingId !== id))}
                 />
               ) : openedCategoryItem ? (
                 <>
@@ -1844,12 +1964,39 @@ function App() {
                             <CategoryItemStatusBadge item={openedCategoryItem} />
                           </div>
                           <div className="category-item-fields">
-                            {Object.entries(openedCategoryItem.fields).filter(([, value]) => value).map(([key, value]) => (
-                              <div key={key} className="category-item-field">
-                                <span className="category-item-field-label">{meta.fields.find(f => f.key === key)?.label ?? key}</span>
-                                <span className="category-item-field-value">{value}</span>
-                              </div>
-                            ))}
+                            {Object.entries(openedCategoryItem.fields).filter(([, value]) => value).map(([key, value]) => {
+                              const fieldDef = meta.fields.find(f => f.key === key);
+                              return (
+                                <div key={key} className="category-item-field">
+                                  <span className="category-item-field-label">{fieldDef?.label ?? key}</span>
+                                  <span className="category-item-field-value">
+                                    {fieldDef ? <CategoryFieldValue fieldDef={fieldDef} value={value as string} /> : value}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          <div className="category-item-actions">
+                            {openedCategoryItem.effectiveState === 'active' && (
+                              <button className="btn-connect" onClick={() => updateCategoryItemState(openedCategoryItem.itemId, 'done')}>
+                                ✅ Mark as done
+                              </button>
+                            )}
+                            {openedCategoryItem.effectiveState === 'done' && (
+                              <button className="btn-disconnect" onClick={() => updateCategoryItemState(openedCategoryItem.itemId, null)}>
+                                ↩️ Restore to active
+                              </button>
+                            )}
+                            <button
+                              className="btn-disconnect"
+                              onClick={() => {
+                                if (window.confirm('Delete this card? This cannot be undone from the UI.')) {
+                                  updateCategoryItemState(openedCategoryItem.itemId, 'trashed');
+                                }
+                              }}
+                            >
+                              🗑️ Delete
+                            </button>
                           </div>
                         </div>
 
@@ -1880,7 +2027,54 @@ function App() {
                     })()}
                   </div>
                 </>
-              ) : (
+              ) : openedCategoryType === TRAVEL_CATEGORY_TYPE_ID ? (
+                <TravelTripsView
+                  meta={categoryTypeMeta(TRAVEL_CATEGORY_TYPE_ID, categoryTypeCatalog)}
+                  items={categoryItems.filter(i => i.categoryType === TRAVEL_CATEGORY_TYPE_ID)}
+                  apiBaseUrl={import.meta.env.VITE_API_BASE_URL}
+                  getAuthToken={async () => (await fetchAuthSession()).tokens?.idToken?.toString() ?? null}
+                  onOpenItem={openCategoryItemDetail}
+                  onBack={() => setOpenedCategoryType(null)}
+                />
+              ) : openedCategoryType ? (() => {
+                const meta = categoryTypeMeta(openedCategoryType, categoryTypeCatalog);
+                const items = categoryItems.filter(i => i.categoryType === openedCategoryType);
+                const active = [...items.filter(i => i.effectiveState === 'active')].sort((a, b) =>
+                  (a.fields[meta.primaryDateField] || '').localeCompare(b.fields[meta.primaryDateField] || '')
+                );
+                const done = items.filter(i => i.effectiveState === 'done');
+                return (
+                  <>
+                    <header className="tab-header">
+                      <button className="btn-back" onClick={() => setOpenedCategoryType(null)}>← Back to Smart Categories</button>
+                      <h1>{meta.icon} {meta.label}</h1>
+                    </header>
+                    <div className="tab-body">
+                      <div className="category-item-grid">
+                        {active.map(item => (
+                          <CategoryItemCard key={item.itemId} item={item} meta={meta} onClick={() => openCategoryItemDetail(item.itemId)} />
+                        ))}
+                      </div>
+                      {active.length === 0 && done.length === 0 && (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">{meta.icon}</div>
+                          <p>No tracked cards in this category yet.</p>
+                        </div>
+                      )}
+                      {done.length > 0 && (
+                        <details className="category-completed-section">
+                          <summary>Completed ({done.length})</summary>
+                          <div className="category-item-grid">
+                            {done.map(item => (
+                              <CategoryItemCard key={item.itemId} item={item} meta={meta} onClick={() => openCategoryItemDetail(item.itemId)} />
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </div>
+                  </>
+                );
+              })() : (
                 <>
                   <header className="tab-header">
                     <h1>Smart Categories</h1>
@@ -1904,37 +2098,53 @@ function App() {
                           </div>
                         ))}
                       </div>
-                    ) : categoryItems.length > 0 ? (() => {
-                      const active = [...categoryItems.filter(i => !i.isComplete)].sort((a, b) => {
-                        const field = categoryTypeMeta(a.categoryType, categoryTypeCatalog).primaryDateField;
-                        return (a.fields[field] || '').localeCompare(b.fields[field] || '');
-                      });
-                      const done = categoryItems.filter(i => i.isComplete);
-                      return (
-                        <>
-                          <div className="category-item-grid">
-                            {active.map(item => (
-                              <CategoryItemCard key={item.itemId} item={item} meta={categoryTypeMeta(item.categoryType, categoryTypeCatalog)} onClick={() => openCategoryItemDetail(item.itemId)} />
-                            ))}
+                    ) : (() => {
+                      // One row per category type that EXISTS (built-in or custom) — not just ones that
+                      // already have a card. A brand new category (built-in or just-created) needs to be
+                      // visible and enterable even at zero cards, otherwise there's no way to discover it
+                      // or watch it fill in. Each row: a short preview (active cards first, sorted the
+                      // same way the drill-in view sorts them, done cards filling remaining slots) with a
+                      // way to see everything.
+                      const categoryTypeIds = Object.keys(categoryTypeCatalog);
+                      const PREVIEW_COUNT = 5;
+                      if (categoryTypeIds.length === 0) {
+                        return (
+                          <div className="empty-inbox">
+                            <div className="empty-inbox-icon">🚚</div>
+                            <p>No categories yet.<br/>Create your own with "+ New Category".</p>
                           </div>
-                          {done.length > 0 && (
-                            <details className="category-completed-section">
-                              <summary>Completed ({done.length})</summary>
-                              <div className="category-item-grid">
-                                {done.map(item => (
-                                  <CategoryItemCard key={item.itemId} item={item} meta={categoryTypeMeta(item.categoryType, categoryTypeCatalog)} onClick={() => openCategoryItemDetail(item.itemId)} />
-                                ))}
+                        );
+                      }
+                      return (
+                        <div className="category-type-rows">
+                          {categoryTypeIds.map(categoryTypeId => {
+                            const meta = categoryTypeMeta(categoryTypeId, categoryTypeCatalog);
+                            const items = categoryItems.filter(i => i.categoryType === categoryTypeId);
+                            const active = [...items.filter(i => i.effectiveState === 'active')].sort((a, b) =>
+                              (a.fields[meta.primaryDateField] || '').localeCompare(b.fields[meta.primaryDateField] || '')
+                            );
+                            const done = items.filter(i => i.effectiveState === 'done');
+                            const preview = [...active, ...done].slice(0, PREVIEW_COUNT);
+                            return (
+                              <div key={categoryTypeId} className="category-type-row">
+                                <div className="category-type-row-header">
+                                  <h3>{meta.icon} {meta.label}</h3>
+                                  <span className="category-type-row-count">{items.length} card{items.length === 1 ? '' : 's'}</span>
+                                  <button className="btn-disconnect" onClick={() => setOpenedCategoryType(categoryTypeId)}>View all →</button>
+                                </div>
+                                <div className="category-type-row-preview">
+                                  {preview.length > 0
+                                    ? preview.map(item => (
+                                        <CategoryItemCard key={item.itemId} item={item} meta={meta} onClick={() => openCategoryItemDetail(item.itemId)} />
+                                      ))
+                                    : <p className="wizard-stage-help">No cards yet — they'll show up automatically once Maily detects a matching email.</p>}
+                                </div>
                               </div>
-                            </details>
-                          )}
-                        </>
+                            );
+                          })}
+                        </div>
                       );
-                    })() : (
-                      <div className="empty-inbox">
-                        <div className="empty-inbox-icon">🚚</div>
-                        <p>No tracked items yet.<br/>They'll show up here automatically once Maily detects one in your synced mail — or create your own category with "+ New Category".</p>
-                      </div>
-                    )}
+                    })()}
                   </div>
                 </>
               )
@@ -2331,6 +2541,22 @@ function App() {
               </div>
             ))}
           </div>
+
+          {/* Category Wizard's "select example emails" overlay — a sibling of whatever tab is showing
+              (not a tab swap), so the wizard underneath stays mounted with its state intact. */}
+          {emailPickerOpen && (
+            <EmailSelectionPicker
+              title="Select example emails (up to 3)"
+              emails={emails}
+              labels={labels}
+              accounts={connectedAccounts}
+              selectedIds={categoryReferenceIds}
+              maxSelected={MAX_CATEGORY_REFERENCE_EMAILS}
+              onToggle={toggleCategoryReferenceId}
+              onDone={() => setEmailPickerOpen(false)}
+              onCancel={() => { setCategoryReferenceIds(emailPickerSnapshot); setEmailPickerOpen(false); }}
+            />
+          )}
 
           {/* Global sync action — one persistent button instead of a per-tab header button.
               Hidden on Compose, which has its own footer action bar in that same corner. */}
