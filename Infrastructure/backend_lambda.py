@@ -9,6 +9,7 @@ import urllib.parse
 import boto3
 import urllib.request
 import urllib.error
+import concurrent.futures
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from email.message import EmailMessage
@@ -23,6 +24,11 @@ category_types_table = dynamodb.Table('Maily-CategoryTypes')
 travel_trips_table = dynamodb.Table('Maily-TravelTrips')
 
 _secrets_cache = None
+
+# Bounds how many of one account's messages/attachments we fetch from the provider at once. Kept
+# per-account (never shared across accounts — each sync_single_*_account call gets its own pool),
+# same boundary the AI classification batching already uses (see finalize_batch/classify_emails_batch).
+_PROVIDER_FETCH_CONCURRENCY = 8
 
 PRESET_LABELS = [
     {"id": "work",        "name": "Work",        "description": "Emails related to the user's job, colleagues, meetings, work projects, or professional communication.", "color": "#6366f1"},
@@ -351,6 +357,29 @@ def _update_account_token(user_id, provider, provider_email, new_access_token, e
         ExpressionAttributeValues={':accounts': accounts}
     )
 
+class ReauthRequiredError(Exception):
+    """Raised when a provider rejects a refresh_token outright (invalid_grant) rather than just
+    expiring the access token — the account needs the user to reconnect, not just retry."""
+    pass
+
+def _mark_account_needs_reauth(user_id, provider, provider_email):
+    """Persists needsReauth=True on the matching account so Settings can surface a 'Reconnect'
+    prompt. Written directly here (not left for the caller to save) because the scheduled/manual
+    sync loop only writes email_accounts back when a sync actually advances a watermark — a failed
+    account never would, so this flag would otherwise be set in memory and immediately lost."""
+    users_table = dynamodb.Table('Maily-Users')
+    result = users_table.get_item(Key={'userId': user_id})
+    accounts = result.get('Item', {}).get('email_accounts', [])
+    for account in accounts:
+        if account.get('email') == provider_email and account.get('provider') == provider:
+            account['needsReauth'] = True
+            break
+    users_table.update_item(
+        Key={'userId': user_id},
+        UpdateExpression='SET email_accounts = :accounts',
+        ExpressionAttributeValues={':accounts': accounts}
+    )
+
 def refresh_google_access_token(user_id, google_email, refresh_token):
     secrets = get_secrets()
     client_id = secrets['GOOGLE_CLIENT_ID']
@@ -366,8 +395,16 @@ def refresh_google_access_token(user_id, google_email, refresh_token):
     req = urllib.request.Request('https://oauth2.googleapis.com/token', data=data, method='POST')
     req.add_header('Content-Type', 'application/x-www-form-urlencoded')
 
-    with urllib.request.urlopen(req) as resp:
-        token_data = json.loads(resp.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            token_data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        if e.code == 400 and 'invalid_grant' in error_body:
+            print(f"Refresh token for {google_email} (gmail) is no longer valid, flagging for reconnect: {error_body}")
+            _mark_account_needs_reauth(user_id, 'gmail', google_email)
+            raise ReauthRequiredError(f"Gmail account {google_email} needs to be reconnected") from e
+        raise
 
     new_access_token = token_data['access_token']
     _update_account_token(user_id, 'gmail', google_email, new_access_token)
@@ -389,8 +426,16 @@ def refresh_microsoft_access_token(user_id, outlook_email, refresh_token):
     req = urllib.request.Request('https://login.microsoftonline.com/common/oauth2/v2.0/token', data=data, method='POST')
     req.add_header('Content-Type', 'application/x-www-form-urlencoded')
 
-    with urllib.request.urlopen(req) as resp:
-        token_data = json.loads(resp.read().decode('utf-8'))
+    try:
+        with urllib.request.urlopen(req) as resp:
+            token_data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        if e.code == 400 and 'invalid_grant' in error_body:
+            print(f"Refresh token for {outlook_email} (outlook) is no longer valid, flagging for reconnect: {error_body}")
+            _mark_account_needs_reauth(user_id, 'outlook', outlook_email)
+            raise ReauthRequiredError(f"Outlook account {outlook_email} needs to be reconnected") from e
+        raise
 
     new_access_token = token_data['access_token']
     _update_account_token(user_id, 'outlook', outlook_email, new_access_token, token_data.get('expires_in', 3600))
@@ -1117,7 +1162,7 @@ def handle_save_settings(event):
             "body": json.dumps({"message": "Internal server error while saving settings"})
         }
 
-def get_user_emails(user_id, account_filter=None, label_filter=None):
+def get_user_emails(user_id, account_filter=None, label_filter=None, direction_filter=None):
     """Queries every stored email for a user (one paginated Query on the userId partition key —
     cheap regardless of item count, unlike N individual GetItems). Shared by the /hello listing and
     the /sync response, which both need "the user's current full inbox" as opposed to just what
@@ -1138,6 +1183,11 @@ def get_user_emails(user_id, account_filter=None, label_filter=None):
         items = [e for e in items if e.get('providerEmail') == account_filter]
     if label_filter:
         items = [e for e in items if label_filter in (e.get('labels') or [])]
+    if direction_filter:
+        # Emails synced before the 'direction' field existed have no such key — treat those as
+        # 'received' (the historical default of "everything shows in the inbox") rather than
+        # excluding them from every direction filter.
+        items = [e for e in items if (e.get('direction') or 'received') == direction_filter]
 
     return items
 
@@ -1150,9 +1200,9 @@ def handle_get_emails(event):
                 "body": json.dumps({"error": "Unauthorized. Could not identify user."})
             }
 
-        # Optional filters: ?account=user@gmail.com, ?label=work
+        # Optional filters: ?account=user@gmail.com, ?label=work, ?direction=sent|received
         query_params = event.get('queryStringParameters') or {}
-        items = get_user_emails(user_id, query_params.get('account'), query_params.get('label'))
+        items = get_user_emails(user_id, query_params.get('account'), query_params.get('label'), query_params.get('direction'))
 
         return {
             "statusCode": 200,
@@ -1166,52 +1216,115 @@ def handle_get_emails(event):
             "body": json.dumps({"message": "Failed to fetch data."})
         }
 
-def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, category_catalog):
-    """Fetch and store new emails for one connected Gmail account.
-    Instead of checking every fetched message against DynamoDB, we keep a per-account watermark
-    (last_synced_message_id/last_synced_at, mutated in place on `account` \u2014 sync_user_emails persists
-    it) and ask Gmail only for messages after it. The result is already newest-first, so we just walk
-    it until we hit the watermark id and stop; everything above that point is new. Existing rows are
-    never re-touched \u2014 status is user-driven going forward, not re-derived from the provider."""
-    provider_email = account['email']
-    last_synced_at = account.get('last_synced_at')
-    last_synced_message_id = account.get('last_synced_message_id')
+class GmailHistoryExpiredError(Exception):
+    """Raised when Gmail no longer has history records back to our stored startHistoryId (it only
+    retains ~7-30 days of history) \u2014 the caller must fall back to a full bootstrap re-list."""
+    pass
 
+def _gmail_current_history_id(user_id, account):
+    """Cheap call used to establish a fresh incremental-sync baseline (on first-ever sync for an
+    account, or after a GmailHistoryExpiredError forces a re-bootstrap)."""
+    profile = api_get(user_id, account, 'https://gmail.googleapis.com/gmail/v1/users/me/profile')
+    return profile.get('historyId')
+
+def _gmail_bootstrap_message_ids(user_id, account, fetch_limit):
+    """First-ever sync for this account, or history too old to resume from: just grab the most
+    recent fetch_limit messages, same as a fresh install would see. This does not need a watermark
+    cutoff \u2014 with a fresh (or reset) baseline everything returned here is "new" by definition."""
     list_url = f'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults={fetch_limit}'
-    if last_synced_at:
-        # Gmail's after: operator is only documented to guarantee day-level precision, so buffer back
-        # a full day to make sure the watermark message is still included in the results \u2014 the actual
-        # cutoff is enforced below by matching last_synced_message_id, not by this filter.
-        buffered_ts = int(datetime.fromisoformat(last_synced_at).timestamp()) - 86400
-        list_url += f'&q=after:{buffered_ts}'
-
     list_data = api_get(user_id, account, list_url)
-    messages = list_data.get('messages', [])
+    return [m['id'] for m in list_data.get('messages', [])]
 
-    if not messages:
-        return [], 0
-
-    new_message_ids = []
-    for msg in messages:
-        if msg['id'] == last_synced_message_id:
+def _gmail_history_message_ids(user_id, account, start_history_id):
+    """Uses Gmail's history API to ask "what messages were added since start_history_id" directly,
+    instead of re-listing the recent messages and re-diffing against a watermark on every sync (the
+    old approach, which also had a latent bug: a backlog bigger than fetch_limit would never find the
+    watermark and silently skip the overflow forever). Raises GmailHistoryExpiredError if Gmail has
+    already discarded history that far back, in which case the caller re-bootstraps."""
+    message_ids = []
+    new_history_id = start_history_id
+    page_token = None
+    while True:
+        url = (
+            f'https://gmail.googleapis.com/gmail/v1/users/me/history'
+            f'?startHistoryId={start_history_id}&historyTypes=messageAdded&maxResults=100'
+        )
+        if page_token:
+            url += f'&pageToken={page_token}'
+        try:
+            data = api_get(user_id, account, url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise GmailHistoryExpiredError(f"startHistoryId {start_history_id} is no longer available") from e
+            raise
+        for record in data.get('history', []):
+            for added in record.get('messagesAdded', []):
+                msg_id = added.get('message', {}).get('id')
+                if msg_id:
+                    message_ids.append(msg_id)
+        if 'historyId' in data:
+            new_history_id = data['historyId']
+        page_token = data.get('nextPageToken')
+        if not page_token:
             break
-        new_message_ids.append(msg['id'])
+
+    # The same message can appear in more than one history record (e.g. added, then labeled) \u2014
+    # de-dupe while keeping first-seen order.
+    seen = set()
+    deduped_ids = [mid for mid in message_ids if not (mid in seen or seen.add(mid))]
+    return deduped_ids, new_history_id
+
+def _fetch_gmail_messages_full(user_id, account, message_ids):
+    """Fetches full message data for a batch of ids concurrently, scoped to this one account only
+    (never mixed with another account's messages \u2014 same per-account boundary the AI classification
+    batching uses, see finalize_batch). Replaces a serial one-at-a-time loop that made this the
+    slowest part of every Gmail sync."""
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_PROVIDER_FETCH_CONCURRENCY) as executor:
+        future_to_id = {
+            executor.submit(
+                api_get, user_id, account,
+                f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{raw_id}?format=full'
+            ): raw_id
+            for raw_id in message_ids
+        }
+        for future in concurrent.futures.as_completed(future_to_id):
+            results[future_to_id[future]] = future.result()
+    # as_completed finishes in fetch-completion order, not request order \u2014 restore the caller's order.
+    return [results[raw_id] for raw_id in message_ids]
+
+def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, category_catalog):
+    """Fetch and store new emails for one connected Gmail account, using Gmail's history API to ask
+    directly "what's new since last time" instead of re-listing recent messages and diffing against a
+    watermark. Falls back to a full bootstrap re-list on the very first sync, or if Gmail has aged out
+    the stored history baseline. Existing rows are never re-touched \u2014 status is user-driven going
+    forward, not re-derived from the provider."""
+    provider_email = account['email']
+    last_history_id = account.get('last_history_id')
+
+    new_message_ids = None
+    new_history_id = None
+    if last_history_id:
+        try:
+            new_message_ids, new_history_id = _gmail_history_message_ids(user_id, account, last_history_id)
+        except GmailHistoryExpiredError as e:
+            print(f"Gmail history expired for {provider_email}, re-bootstrapping: {e}")
+
+    if new_message_ids is None:
+        new_message_ids = _gmail_bootstrap_message_ids(user_id, account, fetch_limit)
+        new_history_id = _gmail_current_history_id(user_id, account)
 
     if not new_message_ids:
+        account['last_history_id'] = new_history_id
         return [], 0
 
     # format=full so we can pull attachment metadata from payload.parts.
     # The body content it returns is used only to derive attachments/snippet and then discarded \u2014 not stored.
     label_name_cache = {'map': None}  # lazily resolved, shared across this account's messages
     pending = []
-    newest_received_at = None
-    for idx, raw_id in enumerate(new_message_ids):
+    email_datas = _fetch_gmail_messages_full(user_id, account, new_message_ids)
+    for raw_id, email_data in zip(new_message_ids, email_datas):
         email_id = f"gmail#{provider_email}#{raw_id}"  # provider-prefixed, keeps emailId unique across accounts/providers
-        email_data = api_get(
-            user_id, account,
-            f'https://gmail.googleapis.com/gmail/v1/users/me/messages/{raw_id}?format=full'
-        )
-
         payload = email_data.get('payload', {})
         headers = payload.get('headers', [])
         subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '(No Subject)')
@@ -1226,13 +1339,14 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, cate
         snippet = email_data.get('snippet', '').replace('\u034f', '').strip()
         label_ids = email_data.get('labelIds', [])
         is_unread = 'UNREAD' in label_ids
+        # Gmail's SENT label is authoritative; the from-address check is just a safety net for the
+        # rare message that's missing it (e.g. sent from a different client before this label existed).
+        direction = 'sent' if ('SENT' in label_ids or from_address.lower() == provider_email.lower()) else 'received'
         provider_labels = derive_gmail_provider_labels(label_ids, user_id, account, label_name_cache)
         attachments = extract_gmail_attachments(payload)
         in_reply_to = next((h['value'] for h in headers if h['name'] == 'In-Reply-To'), '')
         message_id = next((h['value'] for h in headers if h['name'].lower() == 'message-id'), '')
         received_at = gmail_internal_date_to_iso(email_data.get('internalDate'))
-        if idx == 0:
-            newest_received_at = received_at  # new_message_ids[0] is always the newest \u2014 messages is newest-first
         body_text, body_html = extract_gmail_bodies(payload)  # delivered in the response only, never persisted
 
         pending.append({
@@ -1245,6 +1359,7 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, cate
             'cc':            cc_addresses,
             'content':       snippet,
             'status':        'unread' if is_unread else 'read',
+            'direction':     direction,
             'provider':      'gmail',
             'providerEmail': provider_email,
             'providerLabels': provider_labels,
@@ -1258,24 +1373,31 @@ def sync_single_gmail_account(user_id, account, fetch_limit, label_catalog, cate
         })
 
     new_emails = finalize_batch(user_id, pending, label_catalog, category_catalog)
+    # historyId always moves forward regardless of whether this batch found any new mail — it's our
+    # sync cursor, not a "did we find anything" flag. last_synced_at is kept only for display/back-compat.
+    account['last_history_id'] = new_history_id
     if new_emails:
-        account['last_synced_message_id'] = new_message_ids[0]
-        account['last_synced_at'] = newest_received_at
+        account['last_synced_at'] = max(p['receivedAt'] for p in pending if p.get('receivedAt'))
     return new_emails, len(new_emails)
 
-def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, category_catalog):
-    """Fetch and store new emails for one connected Outlook account via Microsoft Graph.
-    Same watermark approach as the Gmail path — see its docstring. Graph's receivedDateTime filter is
-    reliably second-precise (unlike Gmail's day-level after:), but we still buffer it and confirm the
-    cutoff by matching last_synced_message_id, for the same clock-skew/edge-case safety margin."""
-    provider_email = account['email']
-    last_synced_at = account.get('last_synced_at')
-    last_synced_message_id = account.get('last_synced_message_id')
+class OutlookDeltaExpiredError(Exception):
+    """Raised when Microsoft Graph rejects a stored delta link (410 Gone) — the caller must fall
+    back to a full bootstrap re-list and try to re-establish a fresh delta link."""
+    pass
 
+_OUTLOOK_SELECT_FIELDS = (
+    'subject,from,toRecipients,ccRecipients,replyTo,internetMessageId,bodyPreview,isRead,'
+    'conversationId,receivedDateTime,hasAttachments,internetMessageHeaders,body,categories'
+)
+
+def _outlook_bootstrap_messages(user_id, account, fetch_limit, last_synced_at, last_synced_message_id):
+    """First-ever sync for this account, or the stored delta link expired: re-list the most recent
+    messages and cut off at the last watermark we've seen — the same approach Outlook sync has
+    always used, kept as the fallback path underneath the delta-based sync below."""
     list_url = (
         f'https://graph.microsoft.com/v1.0/me/messages?$top={fetch_limit}'
         f'&$orderby=receivedDateTime%20desc'
-        f'&$select=subject,from,toRecipients,ccRecipients,replyTo,internetMessageId,bodyPreview,isRead,conversationId,receivedDateTime,hasAttachments,internetMessageHeaders,body,categories'
+        f'&$select={_OUTLOOK_SELECT_FIELDS}'
     )
     if last_synced_at:
         # urllib.request rejects literal spaces in URLs ("URL can't contain control characters"),
@@ -1286,17 +1408,117 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, ca
     list_data = api_get(user_id, account, list_url)
     messages = list_data.get('value', [])
 
-    if not messages:
-        return [], 0
-
     new_messages = []
     for msg in messages:
         if msg['id'] == last_synced_message_id:
             break
         new_messages.append(msg)
+    return new_messages
+
+def _outlook_try_establish_delta_link(user_id, account, last_synced_at):
+    """Best-effort: seeds an incremental delta cursor scoped to roughly the same recent window as the
+    bootstrap fetch, so future syncs can ask Graph "what changed" instead of re-listing everything.
+    Must request the same $select as genuine delta fetches use (_OUTLOOK_SELECT_FIELDS) — a delta
+    link carries forward the $select scope of the request that created it, so seeding it with a
+    narrower field set would silently starve every future call through this link of the fields we
+    actually need. Any pages walked through here just to reach the deltaLink token are discarded, so
+    this is a one-time bootstrap cost, not a per-sync one. Not every Graph delta/$filter combination
+    is guaranteed to behave identically across tenants, so any failure here is swallowed — the
+    account simply keeps using the (still correct, just slower) bootstrap re-list path until this
+    succeeds on a later sync."""
+    try:
+        url = f"https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$select={_OUTLOOK_SELECT_FIELDS}"
+        if last_synced_at:
+            buffered = (datetime.fromisoformat(last_synced_at) - timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            url += f'&$filter=receivedDateTime%20ge%20{buffered}'
+
+        for _ in range(10):  # circuit breaker: never chase more than 10 pages trying to seed this
+            data = api_get(user_id, account, url)
+            delta_link = data.get('@odata.deltaLink')
+            if delta_link:
+                return delta_link
+            url = data.get('@odata.nextLink')
+            if not url:
+                return None
+        return None
+    except Exception as e:
+        print(f"Could not establish Outlook delta link for {account.get('email')}, staying on bootstrap sync: {e}")
+        return None
+
+def _outlook_delta_messages(user_id, account, delta_link):
+    """Follows a stored delta link to get just what changed since last time. Graph's delta reports
+    updates (e.g. read/unread toggles) as well as adds, so the caller still filters to genuinely new
+    mail by received date (see sync_single_outlook_account) rather than treating every item as new."""
+    messages = []
+    url = delta_link
+    while True:
+        try:
+            data = api_get(user_id, account, url)
+        except urllib.error.HTTPError as e:
+            if e.code == 410:
+                raise OutlookDeltaExpiredError("Stored Outlook delta link is no longer valid") from e
+            raise
+        messages.extend(m for m in data.get('value', []) if '@removed' not in m)
+        new_delta_link = data.get('@odata.deltaLink')
+        if new_delta_link:
+            return messages, new_delta_link
+        url = data.get('@odata.nextLink')
+        if not url:
+            # Shouldn't happen per Graph's contract (every page ends in either nextLink or
+            # deltaLink), but don't loop forever if it somehow does.
+            return messages, delta_link
+
+def _fetch_outlook_attachments_parallel(user_id, account, message_ids):
+    """Fetches attachment metadata for a batch of messages concurrently, scoped to this one account
+    only — same per-account boundary as _fetch_gmail_messages_full and the AI classification batching
+    (finalize_batch never mixes multiple accounts' emails into one batch either)."""
+    if not message_ids:
+        return {}
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_PROVIDER_FETCH_CONCURRENCY) as executor:
+        future_to_id = {
+            executor.submit(fetch_outlook_attachment_metadata, user_id, account, msg_id): msg_id
+            for msg_id in message_ids
+        }
+        for future in concurrent.futures.as_completed(future_to_id):
+            results[future_to_id[future]] = future.result()
+    return results
+
+def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, category_catalog):
+    """Fetch and store new emails for one connected Outlook account via Microsoft Graph. Uses a
+    delta link (Graph's "what changed" cursor) once one has been established, instead of re-listing
+    recent messages and diffing against a watermark on every sync; falls back to that bootstrap
+    re-list on the very first sync, or whenever the stored delta link has expired."""
+    provider_email = account['email']
+    last_synced_at = account.get('last_synced_at')
+    last_synced_message_id = account.get('last_synced_message_id')
+    delta_link = account.get('outlook_delta_link')
+
+    new_messages = None
+    new_delta_link = None
+    if delta_link:
+        try:
+            candidate_messages, new_delta_link = _outlook_delta_messages(user_id, account, delta_link)
+            # Delta reports updates (e.g. read/unread toggles) too, not just new mail — only keep
+            # items that are actually newer than our last watermark.
+            new_messages = [
+                m for m in candidate_messages
+                if not last_synced_at or (m.get('receivedDateTime') or '') > last_synced_at
+            ]
+        except OutlookDeltaExpiredError as e:
+            print(f"Outlook delta link expired for {provider_email}, re-bootstrapping: {e}")
+
+    if new_messages is None:
+        new_messages = _outlook_bootstrap_messages(user_id, account, fetch_limit, last_synced_at, last_synced_message_id)
+        new_delta_link = _outlook_try_establish_delta_link(user_id, account, last_synced_at)
 
     if not new_messages:
+        if new_delta_link:
+            account['outlook_delta_link'] = new_delta_link
         return [], 0
+
+    messages_with_attachments = [m['id'] for m in new_messages if m.get('hasAttachments')]
+    attachments_by_id = _fetch_outlook_attachments_parallel(user_id, account, messages_with_attachments)
 
     pending = []
     for msg in new_messages:
@@ -1309,8 +1531,11 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, ca
         snippet = (msg.get('bodyPreview') or '').strip()
         is_unread = not msg.get('isRead', True)
         provider_labels = msg.get('categories') or []  # Graph returns ready-to-use category strings
+        # Graph's /me/messages has no structural "sent" label like Gmail, so direction is derived
+        # purely from whether the message's own account sent it.
+        direction = 'sent' if from_address.get('address', '').lower() == provider_email.lower() else 'received'
 
-        attachments = fetch_outlook_attachment_metadata(user_id, account, msg['id']) if msg.get('hasAttachments') else []
+        attachments = attachments_by_id.get(msg['id'], [])
 
         headers = msg.get('internetMessageHeaders') or []
         in_reply_to = next((h['value'] for h in headers if h.get('name', '').lower() == 'in-reply-to'), '')
@@ -1332,6 +1557,7 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, ca
             'cc':            [address for address in cc_addresses if address],
             'content':       snippet,
             'status':        'unread' if is_unread else 'read',
+            'direction':     direction,
             'provider':      'outlook',
             'providerEmail': provider_email,
             'providerLabels': provider_labels,
@@ -1345,9 +1571,14 @@ def sync_single_outlook_account(user_id, account, fetch_limit, label_catalog, ca
         })
 
     new_emails = finalize_batch(user_id, pending, label_catalog, category_catalog)
+    if new_delta_link:
+        account['outlook_delta_link'] = new_delta_link
     if new_emails:
-        account['last_synced_message_id'] = new_messages[0]['id']
-        account['last_synced_at'] = new_messages[0].get('receivedDateTime') or account.get('last_synced_at')
+        # Delta results aren't guaranteed date-ordered the way the old plain list call was, so find
+        # the newest explicitly rather than assuming new_messages[0] is it.
+        newest_message = max(new_messages, key=lambda m: m.get('receivedDateTime') or '')
+        account['last_synced_message_id'] = newest_message['id']
+        account['last_synced_at'] = newest_message.get('receivedDateTime') or account.get('last_synced_at')
     return new_emails, len(new_emails)
 
 def finalize_batch(user_id, pending, label_catalog, category_catalog):
@@ -1390,12 +1621,23 @@ def sync_single_account(user_id, account, fetch_limit, label_catalog, category_c
 def sync_user_emails(user_id, user_record):
     """Syncs all connected email accounts (Gmail + Outlook) for a user. Used by both /sync and EventBridge.
     Returns new_count — how many emails were newly processed this run. Each provider sync mutates its
-    account dict's last_synced_message_id/last_synced_at watermark in place; if anything advanced, we
-    persist the whole email_accounts list back in a single write rather than one write per account."""
+    account dict's watermark fields in place (last_synced_message_id/last_synced_at, plus the
+    incremental-sync cursors last_history_id for Gmail and outlook_delta_link for Outlook — these
+    advance even on a sync that finds zero new mail, since they're just "how far we've looked," not
+    a "did we find anything" flag); if anything advanced, we persist the whole email_accounts list
+    back in a single write rather than one write per account."""
     accounts = user_record.get('email_accounts', [])
     fetch_limit = int(user_record.get('email_fetch_limit', 10))
     label_catalog = get_label_catalog(user_id)  # computed once per user, reused across all their accounts
     category_catalog = get_category_type_catalog(user_id)  # same idea: built-ins + this user's custom types
+
+    def _watermark_snapshot(account):
+        return (
+            account.get('last_synced_message_id'),
+            account.get('last_synced_at'),
+            account.get('last_history_id'),
+            account.get('outlook_delta_link'),
+        )
 
     new_count = 0
     watermark_advanced = False
@@ -1406,10 +1648,10 @@ def sync_user_emails(user_id, user_record):
         # it was connected — see refresh_google_access_token/refresh_microsoft_access_token) must not
         # block every other connected account from syncing. Isolated per account, not per user.
         try:
-            before = (account.get('last_synced_message_id'), account.get('last_synced_at'))
+            before = _watermark_snapshot(account)
             _, count = sync_single_account(user_id, account, fetch_limit, label_catalog, category_catalog)
             new_count += count
-            if (account.get('last_synced_message_id'), account.get('last_synced_at')) != before:
+            if _watermark_snapshot(account) != before:
                 watermark_advanced = True
         except Exception as e:
             print(f"Failed to sync {account.get('provider')} account {account.get('email')} for user {user_id}: {e}")
@@ -3178,7 +3420,15 @@ def handle_get_accounts(event):
         accounts = result.get('Item', {}).get('email_accounts', [])
 
         # Never send tokens to the frontend
-        safe_accounts = [{'email': a['email'], 'provider': a.get('provider', 'gmail')} for a in accounts if a.get('email')]
+        safe_accounts = [
+            {
+                'email': a['email'],
+                'provider': a.get('provider', 'gmail'),
+                'isPrimary': a.get('isPrimary', False),
+                'needsReauth': a.get('needsReauth', False)
+            }
+            for a in accounts if a.get('email')
+        ]
 
         return {
             "statusCode": 200,

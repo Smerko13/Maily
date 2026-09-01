@@ -32,6 +32,7 @@ export interface Email {
   content: string;
   summary?: string;
   status?: string;
+  direction?: 'sent' | 'received';
   provider?: Provider;
   providerEmail?: string;
   attachments?: Attachment[];
@@ -49,6 +50,8 @@ export interface Email {
 export interface ConnectedAccount {
   email: string;
   provider: Provider;
+  isPrimary?: boolean;
+  needsReauth?: boolean;
 }
 
 export interface LabelDef {
@@ -293,6 +296,10 @@ function App() {
   );
   const [fetchLimitSaving, setFetchLimitSaving] = useState<boolean>(false);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccount[]>([]);
+  // Distinguishes "haven't checked yet" from "checked, and there are genuinely zero accounts" —
+  // without this the connect-prompt banner would flash on every load before data arrives.
+  const [accountsLoaded, setAccountsLoaded] = useState<boolean>(false);
+  const reauthToastShownRef = useRef(false);
   const [signature, setSignature] = useState<string>('');
   const [signatureSaving, setSignatureSaving] = useState<boolean>(false);
   const [composeSeed, setComposeSeed] = useState<ComposeSeed | undefined>();
@@ -392,8 +399,27 @@ function App() {
       }
     } catch {
       // silently fail
+    } finally {
+      setAccountsLoaded(true);
     }
   };
+
+  // Surface expired/revoked provider access as soon as we know about it, rather than leaving it
+  // to be discovered only if the user happens to open Settings. Shown once per session per load
+  // that reveals the problem, not on every re-render.
+  useEffect(() => {
+    if (!accountsLoaded) return;
+    const needingReauth = connectedAccounts.filter(a => a.needsReauth);
+    if (needingReauth.length > 0 && !reauthToastShownRef.current) {
+      reauthToastShownRef.current = true;
+      showToast(
+        needingReauth.length === 1
+          ? `${needingReauth[0].email} needs to be reconnected — see Settings.`
+          : `${needingReauth.length} accounts need to be reconnected — see Settings.`,
+        'error'
+      );
+    }
+  }, [accountsLoaded, connectedAccounts]);
 
   // Fetches this user's full label catalog (app presets + their own custom labels).
   const loadLabels = async () => {
@@ -1346,8 +1372,11 @@ function App() {
 
             {/* Dashboard Tab */}
             {activeTab === 'dashboard' && (() => {
-              const totalCount = emails.length;
-              const unreadCount = emails.filter(e => e.status === 'unread').length;
+              // Same rule as the Inbox: mail the user sent doesn't belong in the received-mail
+              // digest/stats. Emails missing 'direction' predate this field and default to 'received'.
+              const dashboardEmails = emails.filter(e => (e.direction || 'received') !== 'sent');
+              const totalCount = dashboardEmails.length;
+              const unreadCount = dashboardEmails.filter(e => e.status === 'unread').length;
               const readCount = totalCount - unreadCount;
               return (
                 <>
@@ -1356,6 +1385,21 @@ function App() {
                   </header>
 
                   <div className="tab-body">
+                    {/* First-run prompt: connect a mailbox immediately instead of making the user
+                        find Settings on their own. */}
+                    {accountsLoaded && connectedAccounts.length === 0 && (
+                      <div className="email-card" style={{ marginBottom: '1.5rem', textAlign: 'center', padding: '2rem 1.5rem' }}>
+                        <h3 style={{ marginTop: 0 }}>👋 Connect your email to get started</h3>
+                        <p style={{ color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                          Maily needs access to a mailbox before it can sync, summarize, or draft anything for you.
+                        </p>
+                        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                          <button onClick={() => loginWithGoogle()} className="btn-connect">✉️ Connect Gmail</button>
+                          <button onClick={() => connectOutlook()} className="btn-connect">📨 Connect Outlook</button>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Bento stat row */}
                     {totalCount > 0 && (
                       <div className="stats-cards stats-cards-compact">
@@ -1414,7 +1458,7 @@ function App() {
                             )}
                           </p>
                           <div className="email-list">
-                            {emails.slice(0, 3).map((email, i) => (
+                            {dashboardEmails.slice(0, 3).map((email, i) => (
                               <div
                                 key={email.emailId ?? i}
                                 className="email-item email-item-clickable dashboard-digest-item"
@@ -1450,7 +1494,7 @@ function App() {
                         <p style={{ padding: '1rem', color: 'var(--text-muted)' }}>No emails to show.</p>
                       ) : (
                         <div className="email-list">
-                          {emails.slice(0, 5).map((email, i) => (
+                          {dashboardEmails.slice(0, 5).map((email, i) => (
                             <div
                               key={email.emailId ?? i}
                               className="email-item email-item-clickable"
@@ -1732,9 +1776,13 @@ function App() {
                       </div>
 
                       {(() => {
+                        // Mail the user sent shouldn't show up in the Inbox — it belongs in Sent
+                        // (not yet built as its own tab; emails missing 'direction' predate this
+                        // field and default to 'received' so nothing existing gets hidden).
+                        const receivedEmails = emails.filter(e => (e.direction || 'received') !== 'sent');
                         const byLabel = labelFilter === 'all'
-                          ? emails
-                          : emails.filter(e => (e.labels || []).includes(labelFilter));
+                          ? receivedEmails
+                          : receivedEmails.filter(e => (e.labels || []).includes(labelFilter));
                         const query = inboxSearch.trim().toLowerCase();
                         const visibleEmails = query
                           ? byLabel.filter(e =>
@@ -2492,13 +2540,30 @@ function App() {
                         <div className="account-info">
                           <span className="account-icon">{account.provider === 'outlook' ? '📨' : '✉️'}</span>
                           <div>
-                            <strong className="account-name">{account.email}</strong>
-                            <span className="account-status-connected">✅ Connected ({providerLabel(account.provider)})</span>
+                            <strong className="account-name">
+                              {account.email}
+                              {account.isPrimary && <span className="account-primary-badge" title="Default sender for Compose"> ⭐ Primary</span>}
+                            </strong>
+                            {account.needsReauth ? (
+                              <span className="account-status-warning">⚠️ Needs reconnecting — access expired or was revoked</span>
+                            ) : (
+                              <span className="account-status-connected">✅ Connected ({providerLabel(account.provider)})</span>
+                            )}
                           </div>
                         </div>
-                        <button onClick={() => disconnectAccount(account.email, account.provider)} className="btn-disconnect">
-                          Disconnect
-                        </button>
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          {account.needsReauth && (
+                            <button
+                              onClick={() => account.provider === 'outlook' ? connectOutlook() : loginWithGoogle()}
+                              className="btn-connect"
+                            >
+                              Reconnect
+                            </button>
+                          )}
+                          <button onClick={() => disconnectAccount(account.email, account.provider)} className="btn-disconnect">
+                            Disconnect
+                          </button>
+                        </div>
                       </div>
                     ))}
 

@@ -88,11 +88,17 @@ def lambda_handler(event, context):
         existing_item = result.get('Item', {})
         accounts = existing_item.get('email_accounts', [])
 
+        # Look up the existing entry for this account (if any) before rebuilding the list below —
+        # used to preserve the refresh_token and primary status across a re-auth/reconnect.
+        existing = next((a for a in accounts if a.get('email') == outlook_email and a.get('provider') == 'outlook'), None)
+
         # If Microsoft didn't return a refresh_token (happens on re-auth), keep the existing one
-        if not refresh_token:
-            existing = next((a for a in accounts if a.get('email') == outlook_email and a.get('provider') == 'outlook'), None)
-            if existing:
-                refresh_token = existing.get('refresh_token')
+        if not refresh_token and existing:
+            refresh_token = existing.get('refresh_token')
+
+        # The first account a user ever connects becomes "primary" (e.g. Compose's default sender);
+        # reconnecting an already-connected account preserves whatever primary status it already had.
+        is_primary = existing.get('isPrimary', False) if existing else (len(accounts) == 0)
 
         # Replace the account if it already exists, otherwise append
         new_account = {
@@ -100,7 +106,9 @@ def lambda_handler(event, context):
             'email': outlook_email,
             'access_token': access_token,
             'refresh_token': refresh_token,
-            'token_expires_at': expires_at
+            'token_expires_at': expires_at,
+            'isPrimary': is_primary,
+            'needsReauth': False
         }
         accounts = [a for a in accounts if not (a.get('email') == outlook_email and a.get('provider') == 'outlook')]
         accounts.append(new_account)

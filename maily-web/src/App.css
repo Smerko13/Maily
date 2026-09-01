@@ -791,6 +791,21 @@
   margin-top: 3px;
 }
 
+.account-status-warning {
+  font-size: 0.78em;
+  color: #d97706;
+  font-weight: 600;
+  display: block;
+  margin-top: 3px;
+}
+
+.account-primary-badge {
+  font-size: 0.72em;
+  font-weight: 600;
+  color: #f59e0b;
+  margin-left: 6px;
+}
+
 .btn-connect {
   padding: 9px 20px;
   background: linear-gradient(135deg, #ef4444, #f97316);
