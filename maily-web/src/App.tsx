@@ -7,7 +7,7 @@ import EmailSelectionPicker from './components/EmailSelectionPicker';
 import TravelTripsView from './components/TravelTripsView';
 import { CategoryFieldValue, formatFieldValueText } from './components/fields/CategoryFieldValue';
 import {
-  LayoutDashboard, Inbox as InboxIcon, Sparkles, Truck, BarChart3, Settings,
+  LayoutDashboard, Inbox as InboxIcon, Send, Sparkles, Truck, BarChart3, Settings,
   LogOut, Sun, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, SquarePen,
 } from 'lucide-react';
 import './App.css';
@@ -276,7 +276,7 @@ const THEMES: { id: ThemeId; label: string }[] = [
 function App() {
   const [emails, setEmails] = useState<Email[]>([]); // the array of email objects displayed in the inbox
   const [loading, setLoading] = useState<boolean>(false); // true/false to disable the Sync button while fetching
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'compose' | 'settings' | 'stats' | 'drafting' | 'categories'>('dashboard'); // which tab is visible
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'inbox' | 'sent' | 'compose' | 'settings' | 'stats' | 'drafting' | 'categories'>('dashboard'); // which tab is visible
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -310,7 +310,12 @@ function App() {
     if (stored) return stored;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'indigo';
   });
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  // Opens by default on every login/page load; if the user explicitly collapses it, that choice is
+  // remembered (same localStorage pattern as `theme`) instead of resetting open on the next reload.
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    const stored = localStorage.getItem('mailySidebarOpen');
+    return stored === null ? true : stored === 'true';
+  });
 
   // Quick light/dark toggle, layered on top of the 5-theme picker: 'midnight' is already a full dark
   // palette, so toggling just swaps to/from it and remembers whichever light theme you were on before.
@@ -332,6 +337,7 @@ function App() {
   const [openedEmail, setOpenedEmail] = useState<Email | null>(null); // set = showing the detail view instead of the inbox list
 
   const [inboxSearch, setInboxSearch] = useState<string>('');
+  const [sentSearch, setSentSearch] = useState<string>('');
   const [labels, setLabels] = useState<LabelDef[]>([]);
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [labelSaving, setLabelSaving] = useState<boolean>(false);
@@ -377,6 +383,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem('mailyTheme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('mailySidebarOpen', String(sidebarOpen));
+  }, [sidebarOpen]);
 
   // Fetches the current connected-accounts list fresh from the backend. Used on page load, and again
   // after connecting Outlook — re-fetching rather than optimistically merging local state avoids a race
@@ -1326,6 +1336,9 @@ function App() {
               <div onClick={() => setActiveTab('inbox')} className={`nav-item ${activeTab === 'inbox' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><InboxIcon size={17} strokeWidth={2} /></span>Inbox
               </div>
+              <div onClick={() => setActiveTab('sent')} className={`nav-item ${activeTab === 'sent' ? 'active' : ''}`}>
+                <span className="nav-item-icon"><Send size={17} strokeWidth={2} /></span>Sent
+              </div>
               <div onClick={openCompose} className={`nav-item compose-nav-item ${activeTab === 'compose' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><SquarePen size={17} strokeWidth={2} /></span>Compose
               </div>
@@ -1462,7 +1475,7 @@ function App() {
                               <div
                                 key={email.emailId ?? i}
                                 className="email-item email-item-clickable dashboard-digest-item"
-                                onClick={() => openEmailDetail(email)}
+                                onClick={() => { setActiveTab('inbox'); openEmailDetail(email); }}
                               >
                                 <div className="dashboard-rank-badge">{i + 1}</div>
                                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -1498,7 +1511,7 @@ function App() {
                             <div
                               key={email.emailId ?? i}
                               className="email-item email-item-clickable"
-                              onClick={() => openEmailDetail(email)}
+                              onClick={() => { setActiveTab('inbox'); openEmailDetail(email); }}
                             >
                               <div className="email-item-header">
                                 <strong className="email-subject">{email.subject}</strong>
@@ -1876,6 +1889,129 @@ function App() {
                 </>
               )
             )}
+
+            {/* Sent Tab — mirrors the Inbox list (newest first, filterable by search), filtered to
+                mail the user sent rather than received. Opening one reuses the Inbox detail view
+                (same as Dashboard/Smart Categories do) rather than duplicating that whole thread UI
+                here — "Back to Inbox" on that view is a fair description of where it returns to. */}
+            {activeTab === 'sent' && (() => {
+              const sentEmails = emails.filter(e => e.direction === 'sent');
+              const query = sentSearch.trim().toLowerCase();
+              const visibleSentEmails = query
+                ? sentEmails.filter(e =>
+                    e.subject?.toLowerCase().includes(query) ||
+                    (e.to || []).some(addr => addr.toLowerCase().includes(query)) ||
+                    e.content?.toLowerCase().includes(query) ||
+                    e.summary?.toLowerCase().includes(query)
+                  )
+                : sentEmails;
+              return (
+                <>
+                  <header className="tab-header">
+                    <h1>Sent</h1>
+                  </header>
+
+                  {/* Search — subject, recipient, or content */}
+                  {sentEmails.length > 0 && (
+                    <div className="inbox-search-bar">
+                      <div className="inbox-search-input-wrap">
+                        <span className="inbox-search-icon">🔎</span>
+                        <input
+                          type="text"
+                          value={sentSearch}
+                          onChange={e => setSentSearch(e.target.value)}
+                          placeholder="Search by subject, recipient, or content"
+                          className="inbox-search-input"
+                        />
+                        {sentSearch && (
+                          <button
+                            className="inbox-search-clear"
+                            onClick={() => setSentSearch('')}
+                            aria-label="Clear search"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="tab-body">
+                    <div className="email-card">
+                      <div className="email-card-header">
+                        <h3>📤 Sent Mail</h3>
+                      </div>
+
+                      {loading ? (
+                        <div className="email-list">
+                          {[1,2,3,4].map(i => (
+                            <div key={i} className="skeleton-email-item">
+                              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                                <div className="skeleton skeleton-row medium" />
+                                <div className="skeleton skeleton-badge" />
+                              </div>
+                              <div className="skeleton skeleton-row long" />
+                              <div className="skeleton skeleton-row full" />
+                            </div>
+                          ))}
+                        </div>
+                      ) : visibleSentEmails.length > 0 ? (
+                        <div className="email-list">
+                          {visibleSentEmails.map((email, index) => (
+                            <div
+                              key={index}
+                              className="email-item email-item-clickable"
+                              onClick={() => { setActiveTab('inbox'); openEmailDetail(email); }}
+                            >
+                              <div className="email-item-header">
+                                <strong className="email-subject">{email.subject}</strong>
+                                {email.providerEmail && connectedAccounts.length > 1 && (
+                                  <span className="email-account-badge">{providerLabel(email.provider)}: {email.providerEmail}</span>
+                                )}
+                              </div>
+                              <p className="email-summary"><strong>To:</strong> {(email.to && email.to.length > 0) ? email.to.join(', ') : '(no recipients)'}</p>
+                              {email.summary && (
+                                <p className="email-summary"><strong>Summary:</strong> {email.summary}</p>
+                              )}
+                              <p className="email-content">{email.content}</p>
+
+                              {email.attachments && email.attachments.length > 0 && (
+                                <div className="email-attachments">
+                                  {email.attachments.map(att => (
+                                    <button
+                                      key={att.id}
+                                      className="attachment-chip"
+                                      disabled={attachmentLoadingId === att.id}
+                                      onClick={e => {
+                                        e.stopPropagation();
+                                        if (email.emailId) downloadAttachment(email.emailId, att);
+                                      }}
+                                    >
+                                      📎 {att.filename} ({formatFileSize(att.size)})
+                                      {attachmentLoadingId === att.id ? ' ⏳' : ''}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : query ? (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">🔎</div>
+                          <p>No matches for "{sentSearch.trim()}".<br/>Try a different subject or recipient.</p>
+                        </div>
+                      ) : (
+                        <div className="empty-inbox">
+                          <div className="empty-inbox-icon">📤</div>
+                          <p>No sent mail found.<br/>Anything you send from Maily will show up here.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
 
             {/* Smart Drafting Tab */}
             {activeTab === 'drafting' && (
@@ -2624,8 +2760,9 @@ function App() {
           )}
 
           {/* Global sync action — one persistent button instead of a per-tab header button.
-              Hidden on Compose, which has its own footer action bar in that same corner. */}
-          {activeTab !== 'compose' && (
+              Hidden on Compose (its own footer action bar sits in that same corner) and while the
+              Smart Category wizard is open (its "Approve & Create" button sits there too). */}
+          {activeTab !== 'compose' && !categoryWizard && (
             <button
               onClick={fetchFromBackend}
               disabled={loading}

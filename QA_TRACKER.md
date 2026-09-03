@@ -24,38 +24,13 @@
 
 1. **[NEEDS FIX] No real routing — app is one big page** (`App.tsx`)
    There is no router at all (no `react-router-dom` in `package.json`, no `BrowserRouter`). Every
-   "page" (Dashboard, Inbox, Compose, Settings, Smart Categories, Statistics) is just one
-   `activeTab` state value in a single 2,600-line `App.tsx`, all rendered conditionally in the same
+   "page" (Dashboard, Inbox, Sent, Compose, Settings, Smart Categories, Statistics) is just one
+   `activeTab` state value in a single ~2,900-line `App.tsx`, all rendered conditionally in the same
    component. Practical effects: the URL never changes, refreshing the page always dumps you back
    to Dashboard, there's no browser back/forward support, and nothing is bookmarkable/deep-linkable.
-
-2. **[NEEDS FIX] Sidebar starts collapsed instead of open**
-   `sidebarOpen` defaults to `false` (`App.tsx:306`) and is never persisted (no localStorage), so on
-   every login and every page reload the sidebar is collapsed and the user has to click a floating
-   hamburger button to expand it — the opposite of what we want (open by default, closes only on
-   request).
-
-3. **[NEEDS FIX] Clicking a mail on the Dashboard does nothing until you switch to Inbox**
-   Dashboard email rows call `openEmailDetail(email)` directly but never switch tabs
-   (`App.tsx:1417-1422`, `1453-1457`). The detail view only renders when `activeTab === 'inbox'`
-   (`App.tsx:1504-1505`), so on Dashboard the click just sets hidden state with no visible effect.
-   Worse: when the user *then* manually clicks "Inbox," they land straight in the email detail view
-   (since `openedEmail` was already set) instead of the inbox list — confusing, inconsistent entry
-   point. Compare to `openEmailFromCategoryItem` (`App.tsx:841-845`), which already does this
-   correctly: `setActiveTab('inbox'); openEmailDetail(email);`.
-
-4. **[NEEDS FIX] No "Sent" tab — sent mail has nowhere to go**
-   There is no Sent view/tab/route anywhere in the frontend. The backend now tags every email with
-   a `direction` field and `/hello` accepts `?direction=sent` (see Backend Fixed #3), so this is now
-   purely frontend work: add a Sent tab reusing the Inbox's list/detail components filtered to
-   `direction === 'sent'`, sorted newest-first, with a recipient filter instead of a sender filter.
-
-5. **[NEEDS FIX] "Approve & Create" button in the Smart Category wizard collides with the floating Sync button**
-   The wizard's action row (`CategoryWizard.tsx:361-366`, "Approve & Create"/"Save Changes") sits at
-   the bottom of the panel with no reserved space. The global "Sync with Server" floating button
-   (`App.tsx:2563-2574`, `position: fixed; bottom: 28px; right: 28px; z-index: 30`) is hidden only
-   for the Compose tab (`activeTab !== 'compose'` guard) — not for the category wizard — so it can
-   render directly on top of the Approve/Create button.
+   Note: a full "real page components + shared context" version of this was designed in detail and
+   partially built, then deliberately reverted (scope/risk, not a technical dead end) — worth
+   revisiting that design before starting over from scratch if this gets picked up again.
 
 ---
 
@@ -76,17 +51,10 @@
 **Frontend**
 - **Routing (FE-1):** Introduce `react-router-dom` with real routes (`/dashboard`, `/inbox`,
   `/compose`, `/settings`, `/categories`, `/stats`) replacing the `activeTab` state machine. Fixes
-  refresh, back/forward, and deep-linking in one pass.
-- **Sidebar default (FE-2):** Default `sidebarOpen` to `true`; only collapse on explicit user click
-  or (optionally) persist last state via `localStorage`, same pattern already used for `theme`.
-- **Dashboard click (FE-3):** Add `setActiveTab('inbox')` alongside `openEmailDetail(email)` in the
-  Dashboard's two email-click handlers — mirror the existing `openEmailFromCategoryItem` pattern.
-- **Sent tab (FE-4):** Reuse the Inbox's list/detail components with a `direction === 'sent'`
-  filter (backend already supports `?direction=sent`), sorted newest-first, with a recipient filter
-  instead of a sender filter.
-- **Wizard/Sync button collision (FE-6):** Extend the existing `activeTab !== 'compose'` guard on the
-  floating Sync button to also hide it while the category wizard is open, or add bottom padding to
-  `.wizard-stage-actions` so the fixed button can't overlap it.
+  refresh, back/forward, and deep-linking in one pass. See the note under Frontend item 1 above —
+  a fuller design (real page components, shared context, URL-addressable email/category-item
+  detail views) already exists from a prior attempt; worth reusing that design rather than
+  re-deriving it.
 
 **Backend**
 - **DB indexing (BE-4):** Add a DynamoDB GSI on `(userId, receivedAt)` (and optionally
@@ -194,3 +162,34 @@ up top or deleting it.)*
    `needsReauth: true` a "⚠️ Needs reconnecting" warning plus a one-click Reconnect button (reruns
    the existing connect flow for that provider). A toast also fires once per session on load if any
    connected account needs reauth.
+
+4. **Sidebar started collapsed instead of open**
+   **Problem:** `sidebarOpen` defaulted to `false` and was never persisted, so every login/reload
+   left the sidebar collapsed, requiring a manual click on the floating hamburger button.
+   **Fix:** Defaults to `true`; an explicit collapse is now remembered via `localStorage`
+   (`mailySidebarOpen`, same pattern as `theme`) so it stays how the user last left it.
+
+5. **Clicking a mail on the Dashboard did nothing until you switched to Inbox**
+   **Problem:** Dashboard's email rows called `openEmailDetail(email)` directly without switching
+   `activeTab`, so the detail view (gated on `activeTab === 'inbox'`) never appeared; the user had
+   to separately click "Inbox," landing straight in the now-already-open detail view instead of the
+   list.
+   **Fix:** Both Dashboard click handlers now do `setActiveTab('inbox'); openEmailDetail(email);`,
+   mirroring the pattern `openEmailFromCategoryItem` already used.
+
+6. **"Approve & Create" button in the Smart Category wizard collided with the floating Sync button**
+   **Problem:** The wizard's action row and the global "Sync with Server" floating button both sit
+   bottom-right; the sync button's visibility guard only excluded the Compose tab, not the wizard.
+   **Fix:** Guard extended to `activeTab !== 'compose' && !categoryWizard` — the sync button now
+   hides whenever the wizard is open, regardless of which tab it was opened from.
+
+7. **No "Sent" tab — sent mail had nowhere to go**
+   **Problem:** There was no Sent view anywhere in the frontend, even though the backend has tagged
+   `direction: 'sent'|'received'` on every email since Backend Fixed #3.
+   **Fix:** Added a Sent tab/nav item — same list-card layout as Inbox, filtered to
+   `direction === 'sent'`, sorted newest-first (existing `sortEmailsByDate`), searchable by subject/
+   recipient/content (shows "To: ..." instead of a sender line, since the sender is always you).
+   Clicking a sent email reuses the existing Inbox detail/thread view (`setActiveTab('inbox');
+   openEmailDetail(email);`, same mechanism Dashboard and Smart Categories already use) rather than
+   duplicating that whole thread UI a second time — its "← Back to Inbox" button is accurate for
+   where it returns to. Did not build a from-scratch detail view scoped to Sent specifically.
