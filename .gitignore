@@ -28,3 +28,12 @@ __pycache__/
 
 # Local planning doc, not for the repo
 IMPLEMENTATION_PLAN.md
+
+# macOS
+.DS_Store
+
+# Claude Code local session data
+.claude/
+
+# Local terraform plan output
+Infrastructure/tfplan
