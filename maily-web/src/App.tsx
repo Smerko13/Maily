@@ -497,7 +497,10 @@ function App() {
   // Full-page redirect flow: Azure has no popup/postMessage trick like Google's, so we land back
   // on our own origin at /oauth/outlook/callback with ?code=&state= and exchange the code server-side.
   useEffect(() => {
-    if (window.location.pathname !== '/oauth/outlook/callback') return;
+    // Amplify Hosting 301-redirects every extensionless path to add a trailing slash before
+    // serving index.html, so the browser lands on '/oauth/outlook/callback/' (with slash) — strip
+    // it before comparing so this still matches.
+    if (window.location.pathname.replace(/\/+$/, '') !== '/oauth/outlook/callback') return;
 
     const handleOutlookCallback = async () => {
       const params = new URLSearchParams(window.location.search);
