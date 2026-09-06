@@ -338,6 +338,12 @@ function App() {
 
   const [inboxSearch, setInboxSearch] = useState<string>('');
   const [sentSearch, setSentSearch] = useState<string>('');
+  // Semantic search results from the /search endpoint (LLM-ranked emailIds) for the query they were
+  // fetched for. Compared against the current trimmed query before use, so a fast subsequent edit
+  // never shows results for a stale query while the debounced request for the new one is in flight.
+  const [semanticSearchQuery, setSemanticSearchQuery] = useState<string>('');
+  const [semanticSearchIds, setSemanticSearchIds] = useState<string[]>([]);
+  const [semanticSearchLoading, setSemanticSearchLoading] = useState<boolean>(false);
   const [labels, setLabels] = useState<LabelDef[]>([]);
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [labelSaving, setLabelSaving] = useState<boolean>(false);
@@ -567,6 +573,39 @@ function App() {
     };
     loadEmails();
   }, [accountFilter]);
+
+  // Debounced semantic search: asks the backend (an LLM call over the user's email summaries) which
+  // emails match the query in meaning, not just exact substrings. Instant substring filtering below
+  // covers the gap while this is in flight or if it fails, so search never goes empty/frozen.
+  useEffect(() => {
+    const query = inboxSearch.trim();
+    if (!query) {
+      setSemanticSearchLoading(false);
+      return;
+    }
+    setSemanticSearchLoading(true);
+    const handle = setTimeout(async () => {
+      try {
+        const session = await fetchAuthSession();
+        const token = session.tokens?.idToken?.toString();
+        if (!token) return;
+        const params = new URLSearchParams({ q: query });
+        if (accountFilter !== 'all') params.set('account', accountFilter);
+        const url = `${import.meta.env.VITE_API_BASE_URL}/search?${params.toString()}`;
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        setSemanticSearchQuery(query);
+        setSemanticSearchIds(Array.isArray(data.emailIds) ? data.emailIds : []);
+      } catch {
+        // silently fall back to the plain substring filter — semanticSearchQuery is left stale so it
+        // won't be used for this query
+      } finally {
+        setSemanticSearchLoading(false);
+      }
+    }, 450);
+    return () => clearTimeout(handle);
+  }, [inboxSearch, accountFilter]);
 
   // Google login handler — works for both first account and adding more
  const loginWithGoogle = useGoogleLogin({
@@ -1312,6 +1351,11 @@ function App() {
             </button>
           )}
 
+          {/* Sidebar backdrop — only visible as an overlay-dimmer on narrow (mobile) layouts */}
+          {sidebarOpen && (
+            <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+          )}
+
           {/* Sidebar */}
           <div className={`sidebar ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
             <div className="sidebar-header">
@@ -1329,7 +1373,8 @@ function App() {
               <p className="sidebar-subtitle">Smart Email Assistant</p>
             </div>
 
-            <div className="sidebar-nav">
+            {/* On narrow layouts the sidebar is an overlay, so picking a destination should close it too */}
+            <div className="sidebar-nav" onClick={() => { if (window.innerWidth < 860) setSidebarOpen(false); }}>
               <div onClick={() => setActiveTab('dashboard')} className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}>
                 <span className="nav-item-icon"><LayoutDashboard size={17} strokeWidth={2} /></span>Dashboard
               </div>
@@ -1395,6 +1440,10 @@ function App() {
                 <>
                   <header className="tab-header">
                     <h1>Dashboard</h1>
+                    <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
+                      <RefreshCw size={14} strokeWidth={2.25} className={loading ? 'btn-spin-icon' : ''} />
+                      {loading ? 'Syncing…' : 'Sync'}
+                    </button>
                   </header>
 
                   <div className="tab-body">
@@ -1713,6 +1762,10 @@ function App() {
                 <>
                   <header className="tab-header">
                     <h1>Overview</h1>
+                    <button onClick={fetchFromBackend} disabled={loading} className="btn-sync">
+                      <RefreshCw size={14} strokeWidth={2.25} className={loading ? 'btn-spin-icon' : ''} />
+                      {loading ? 'Syncing…' : 'Sync'}
+                    </button>
                   </header>
 
                   {/* Account filter tabs — only visible when 2+ accounts are connected */}
@@ -1760,13 +1813,17 @@ function App() {
                   {/* Search — subject, sender, or content */}
                   {emails.length > 0 && (
                     <div className="inbox-search-bar">
-                      <div className="inbox-search-input-wrap">
-                        <span className="inbox-search-icon">🔎</span>
+                      <div className={`inbox-search-input-wrap ${inboxSearch ? 'has-value' : ''}`}>
+                        <Sparkles
+                          size={16}
+                          strokeWidth={2.25}
+                          className={`inbox-search-icon ${semanticSearchLoading ? 'inbox-search-icon-thinking' : ''}`}
+                        />
                         <input
                           type="text"
                           value={inboxSearch}
                           onChange={e => setInboxSearch(e.target.value)}
-                          placeholder="Search by subject, sender, or content"
+                          placeholder="Ask Maily to find an email — try “that flight confirmation”"
                           className="inbox-search-input"
                         />
                         {inboxSearch && (
@@ -1796,16 +1853,25 @@ function App() {
                         const byLabel = labelFilter === 'all'
                           ? receivedEmails
                           : receivedEmails.filter(e => (e.labels || []).includes(labelFilter));
-                        const query = inboxSearch.trim().toLowerCase();
-                        const visibleEmails = query
-                          ? byLabel.filter(e =>
+                        const trimmedQuery = inboxSearch.trim();
+                        const query = trimmedQuery.toLowerCase();
+                        // Once the semantic search response for this exact query is in, use its
+                        // LLM-ranked order; otherwise (still debouncing, in flight, or it errored)
+                        // fall back to an instant plain substring match so results are never empty.
+                        const hasSemanticResults = trimmedQuery !== '' && semanticSearchQuery === trimmedQuery;
+                        const visibleEmails = !query
+                          ? byLabel
+                          : hasSemanticResults
+                          ? semanticSearchIds
+                              .map(id => byLabel.find(e => e.emailId === id))
+                              .filter((e): e is Email => !!e)
+                          : byLabel.filter(e =>
                               e.subject?.toLowerCase().includes(query) ||
                               e.from?.toLowerCase().includes(query) ||
                               e.providerEmail?.toLowerCase().includes(query) ||
                               e.content?.toLowerCase().includes(query) ||
                               e.summary?.toLowerCase().includes(query)
-                            )
-                          : byLabel;
+                            );
                         return loading ? (
                         <div className="email-list">
                           {[1,2,3,4].map(i => (
@@ -2759,19 +2825,18 @@ function App() {
             />
           )}
 
-          {/* Global sync action — one persistent button instead of a per-tab header button.
+          {/* Global compose action — one persistent button instead of a per-tab header button.
               Hidden on Compose (its own footer action bar sits in that same corner) and while the
               Smart Category wizard is open (its "Approve & Create" button sits there too). */}
           {activeTab !== 'compose' && !categoryWizard && (
             <button
-              onClick={fetchFromBackend}
-              disabled={loading}
-              className="btn-sync-fab"
-              aria-label="Sync with server"
-              title="Sync with server"
+              onClick={openCompose}
+              className="btn-compose-fab"
+              aria-label="Compose"
+              title="Compose"
             >
-              <RefreshCw size={18} strokeWidth={2.25} className={loading ? 'btn-sync-fab-spin' : ''} />
-              <span>{loading ? 'Syncing…' : 'Sync with Server'}</span>
+              <SquarePen size={18} strokeWidth={2.25} />
+              <span>Compose</span>
             </button>
           )}
         </div>

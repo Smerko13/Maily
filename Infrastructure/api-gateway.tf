@@ -154,6 +154,15 @@ resource "aws_apigatewayv2_route" "thread_route" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
 }
 
+resource "aws_apigatewayv2_route" "search_route" {
+  api_id    = aws_apigatewayv2_api.maily_http_api.id
+  route_key = "GET /search"
+  target    = "integrations/${aws_apigatewayv2_integration.backend_lambda_integration.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_auth.id
+}
+
 resource "aws_apigatewayv2_route" "summarize_route" {
   api_id    = aws_apigatewayv2_api.maily_http_api.id
   route_key = "POST /summarize"

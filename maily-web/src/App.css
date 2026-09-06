@@ -52,6 +52,7 @@
 .app-layout {
   display: flex;
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
   background-color: var(--bg);
   font-family: var(--font-body);
@@ -387,6 +388,9 @@
 
 /* ── Sync / primary button ── */
 .btn-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   padding: 9px 20px;
   background: linear-gradient(135deg, var(--action), var(--action-light));
   color: white;
@@ -410,8 +414,8 @@
   transform: translateY(0);
 }
 
-/* ── Global floating sync button — one persistent CTA instead of a per-tab header button ── */
-.btn-sync-fab {
+/* ── Global floating compose button — one persistent CTA instead of a per-tab header button ── */
+.btn-compose-fab {
   position: fixed;
   bottom: 28px;
   right: 28px;
@@ -420,7 +424,7 @@
   align-items: center;
   gap: 10px;
   padding: 15px 26px;
-  background: linear-gradient(135deg, var(--action), var(--action-light));
+  background: linear-gradient(135deg, var(--accent), var(--accent-light));
   color: white;
   border: none;
   border-radius: 999px;
@@ -430,30 +434,24 @@
   letter-spacing: 0.2px;
   font-family: inherit;
   transition: all 0.25s var(--ease-spring);
-  box-shadow: 0 4px 16px var(--action-glow), 0 0 0 1px rgba(var(--action-rgb), 0.15);
+  box-shadow: 0 4px 16px var(--accent-glow), 0 0 0 1px rgba(var(--accent-rgb), 0.15);
 }
 
-.btn-sync-fab:hover:not(:disabled) {
+.btn-compose-fab:hover {
   transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 0 0 1px rgba(var(--action-rgb), 0.25), 0 12px 36px -6px rgba(var(--action-rgb), 0.6);
-  background: linear-gradient(135deg, var(--action-hover), var(--action));
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.25), 0 12px 36px -6px rgba(var(--accent-rgb), 0.6);
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
 }
 
-.btn-sync-fab:active:not(:disabled) {
+.btn-compose-fab:active {
   transform: translateY(0) scale(0.99);
 }
 
-.btn-sync-fab:disabled {
-  cursor: not-allowed;
-  opacity: 0.75;
-  transform: none;
+.btn-spin-icon {
+  animation: btn-spin-icon 0.9s linear infinite;
 }
 
-.btn-sync-fab-spin {
-  animation: btn-sync-fab-spin 0.9s linear infinite;
-}
-
-@keyframes btn-sync-fab-spin {
+@keyframes btn-spin-icon {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
@@ -894,53 +892,93 @@
 
 .inbox-search-input-wrap {
   position: relative;
-  max-width: 360px;
+  max-width: 480px;
+  border-radius: 999px;
+  padding: 1.5px;
+  background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.4), rgba(168, 85, 247, 0.18) 45%, rgba(var(--accent-rgb), 0.4));
+  box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0);
+  transition: background 0.3s ease, box-shadow 0.3s var(--ease-spring), transform 0.3s var(--ease-spring);
+}
+
+.inbox-search-input-wrap:focus-within,
+.inbox-search-input-wrap.has-value {
+  background: linear-gradient(135deg, var(--accent), #a855f7);
+}
+
+.inbox-search-input-wrap:focus-within {
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.14), 0 10px 28px -8px rgba(168, 85, 247, 0.45);
 }
 
 .inbox-search-icon {
   position: absolute;
-  left: 12px;
+  left: 15px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 0.8em;
-  opacity: 0.6;
+  color: var(--accent);
+  opacity: 0.7;
   pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s var(--ease-spring), color 0.2s ease;
+}
+
+.inbox-search-input-wrap:focus-within .inbox-search-icon {
+  opacity: 1;
+  color: #a855f7;
+  transform: translateY(-50%) scale(1.12) rotate(-8deg);
+}
+
+.inbox-search-icon-thinking {
+  animation: inbox-search-icon-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes inbox-search-icon-pulse {
+  0%, 100% { opacity: 0.55; transform: translateY(-50%) scale(1); }
+  50%      { opacity: 1;    transform: translateY(-50%) scale(1.2); }
 }
 
 .inbox-search-input {
   width: 100%;
-  padding: 8px 32px 8px 32px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  padding: 11px 36px 11px 41px;
+  border-radius: 999px;
+  border: none;
+  background: var(--surface);
   color: var(--text-primary);
-  font-size: 0.85em;
+  font-size: 0.9em;
   font-family: inherit;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .inbox-search-input:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.inbox-search-input::placeholder {
+  color: var(--text-muted);
 }
 
 .inbox-search-clear {
   position: absolute;
-  right: 8px;
+  right: 9px;
   top: 50%;
   transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
+  border-radius: 50%;
   cursor: pointer;
   color: var(--text-muted);
   font-size: 1.1em;
   line-height: 1;
-  padding: 2px 4px;
+  padding: 0;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .inbox-search-clear:hover {
   color: var(--text-primary);
+  background: var(--bg);
 }
 
 /* ── Dashboard ── */
@@ -2686,6 +2724,159 @@
 
   .compose-send {
     margin-left: auto;
+  }
+}
+
+/* ── Mobile layout ──
+   Below this width the sidebar becomes a slide-in overlay (instead of pushing the
+   content column) with a dimmed backdrop, and headers/cards/grids shed their desktop
+   padding and multi-column layouts in favor of stacked, thumb-friendly ones. */
+.sidebar-backdrop {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.5);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+    z-index: 35;
+    animation: sidebar-backdrop-in 0.22s ease;
+  }
+
+  @keyframes sidebar-backdrop-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    height: 100%;
+    z-index: 40;
+    transform: translateX(0);
+    transition: transform 0.3s var(--ease-spring), box-shadow 0.3s var(--ease-spring);
+  }
+
+  .sidebar.sidebar-collapsed {
+    width: 260px;
+    transform: translateX(-100%);
+  }
+
+  .sidebar-collapsed .sidebar-header,
+  .sidebar-collapsed .sidebar-nav,
+  .sidebar-collapsed .sidebar-footer {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+  }
+
+  .main-content,
+  .main-content-expanded {
+    width: 100%;
+  }
+
+  .main-content-expanded .tab-header {
+    padding-left: 62px;
+  }
+
+  .tab-header {
+    padding: 14px 16px 14px 56px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .tab-header h1 {
+    font-size: 1.15em;
+  }
+
+  .tab-body {
+    padding: 16px;
+  }
+
+  .inbox-search-bar,
+  .account-filter-bar {
+    padding: 0.65rem 16px;
+  }
+
+  .inbox-search-input-wrap {
+    max-width: none;
+  }
+
+  .account-filter-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .account-filter-bar .filter-tab {
+    flex-shrink: 0;
+  }
+
+  .email-card {
+    border-radius: var(--radius-md);
+  }
+
+  .email-item-header {
+    flex-wrap: wrap;
+  }
+
+  .account-row {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .drafting-layout {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .drafting-email-list {
+    width: 100%;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+
+  .category-item-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-cards {
+    gap: 10px;
+  }
+
+  .stat-card {
+    min-width: 100%;
+  }
+
+  .btn-compose-fab {
+    bottom: 18px;
+    right: 18px;
+    padding: 14px 18px;
+  }
+
+  .btn-compose-fab span {
+    display: none;
+  }
+
+  .sidebar-hamburger-float {
+    top: 14px;
+    left: 14px;
+  }
+
+  .toast-container {
+    left: 14px;
+    right: 14px;
+    bottom: 86px;
+  }
+
+  .toast {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
   }
 }
 

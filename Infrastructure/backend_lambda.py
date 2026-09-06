@@ -1099,6 +1099,8 @@ def lambda_handler(event, context):
         return handle_delete_travel_trip(event)
     elif http_method == 'POST' and path == '/email-classify':
         return handle_email_classify(event)
+    elif http_method == 'GET' and path == '/search':
+        return handle_search_emails(event)
     else:
         return {
             "statusCode": 404,
@@ -3130,6 +3132,106 @@ def handle_draft_email(event):
         return {
             "statusCode": 500,
             "body": json.dumps({"message": "Internal server error during draft generation"})
+        }
+
+# Caps the number of emails sent to the LLM in one /search call — keeps the prompt (and cost) bounded
+# regardless of inbox size. Emails are truncated to the most recently received before this limit is
+# applied, since that's the most likely relevant slice for a personal inbox at this scale.
+_SEARCH_CANDIDATE_LIMIT = 150
+
+def semantic_search_emails(query, items):
+    """Asks the LLM which of `items` (each a DynamoDB email record) match `query` in meaning, not just
+    exact keywords, and in what order of relevance. Returns a list of emailIds, most relevant first."""
+    if not items:
+        return []
+
+    api_key = get_secrets()['OPENAI_API_KEY']
+
+    numbered_emails = "\n\n".join(
+        f"Email {i + 1}:\n"
+        f"Subject: {item.get('subject', '')}\n"
+        f"From: {item.get('from', '')}\n"
+        f"Summary: {item.get('summary') or (item.get('content') or '')[:300]}"
+        for i, item in enumerate(items)
+    )
+
+    prompt = (
+        f"A user is searching their email inbox for: \"{query}\"\n\n"
+        "Below is a numbered list of their emails. Identify which ones are relevant to the search — "
+        "consider paraphrases, synonyms, and related concepts, not just exact keyword matches "
+        "(e.g. \"flight\" should match a booking confirmation from an airline even if the word "
+        "\"flight\" never appears). Do not include emails that are not actually relevant.\n\n"
+        f"{numbered_emails}\n\n"
+        'Respond with a JSON object of the form {"matches": [3, 1, 7]} — a list of the matching email '
+        "numbers, ordered from most to least relevant. Return an empty list if nothing matches."
+    )
+
+    body = json.dumps({
+        "model": "gpt-4.1-nano",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "response_format": {"type": "json_object"}
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        'https://api.openai.com/v1/chat/completions',
+        data=body,
+        method='POST'
+    )
+    req.add_header('Authorization', f'Bearer {api_key}')
+    req.add_header('Content-Type', 'application/json')
+
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read().decode('utf-8'))
+
+    raw_content = result['choices'][0]['message']['content'].strip()
+    try:
+        matches = json.loads(raw_content).get('matches', [])
+    except (json.JSONDecodeError, AttributeError):
+        matches = []
+
+    email_ids = []
+    for n in matches:
+        if isinstance(n, int) and 1 <= n <= len(items):
+            email_id = items[n - 1].get('emailId')
+            if email_id:
+                email_ids.append(email_id)
+    return email_ids
+
+def handle_search_emails(event):
+    try:
+        user_id = get_authorized_user_id(event)
+        if not user_id:
+            return {
+                "statusCode": 401,
+                "body": json.dumps({"error": "Unauthorized. Could not identify user."})
+            }
+
+        query_params = event.get('queryStringParameters') or {}
+        query = (query_params.get('q') or '').strip()
+        if not query:
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"emailIds": []})
+            }
+
+        items = get_user_emails(user_id, query_params.get('account'), query_params.get('label'))
+        items.sort(key=lambda e: e.get('receivedAt') or '', reverse=True)
+        items = items[:_SEARCH_CANDIDATE_LIMIT]
+
+        email_ids = semantic_search_emails(query, items)
+
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"emailIds": email_ids})
+        }
+    except Exception as e:
+        print(f"Error running semantic search: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"message": "Internal server error while searching emails"})
         }
 
 def _email_addresses(value):
