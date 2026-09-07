@@ -896,6 +896,36 @@ def backfill_category_type(user_id, category_type_id, schema):
 
     return len(matched)
 
+def _enqueue_category_backfill(user_id, category_type_id):
+    """Runs historical classification outside the API Gateway request timeout."""
+    function_name = os.environ.get('AWS_LAMBDA_FUNCTION_NAME')
+    if not function_name:
+        raise RuntimeError('AWS_LAMBDA_FUNCTION_NAME is unavailable')
+    boto3.client('lambda').invoke(
+        FunctionName=function_name,
+        InvocationType='Event',
+        Payload=json.dumps({
+            'action': 'backfill-category',
+            'userId': user_id,
+            'categoryTypeId': category_type_id,
+        }).encode('utf-8'),
+    )
+
+def handle_category_backfill(event):
+    user_id = event.get('userId')
+    category_type_id = event.get('categoryTypeId')
+    if not user_id or not category_type_id:
+        return {'statusCode': 400, 'body': json.dumps({'error': 'Missing category backfill identifiers'})}
+
+    row = category_types_table.get_item(
+        Key={'userId': user_id, 'categoryTypeId': category_type_id}
+    ).get('Item')
+    if not row:
+        return {'statusCode': 204, 'body': ''}
+
+    backfilled_count = backfill_category_type(user_id, category_type_id, _category_type_row_to_schema(row))
+    return {'statusCode': 200, 'body': json.dumps({'backfilledCount': backfilled_count})}
+
 _EXTRACTION_BATCH_SIZE = 20
 
 def extract_category_fields_batch(items, category_type, category_catalog):
@@ -1038,6 +1068,9 @@ def ai_match_category_item(extracted, summary, existing_items, category_type, ca
 
 
 def lambda_handler(event, context):
+    if event.get('action') == 'backfill-category':
+        return handle_category_backfill(event)
+
     # Detect EventBridge scheduled event (not an HTTP request)
     if event.get('source') == 'aws.events' or event.get('detail-type') == 'Scheduled Event':
         print("Received scheduled sync event")
@@ -2690,10 +2723,15 @@ def handle_create_category_type(event):
             for email_item, extracted in pairs:
                 match_and_save_category_item(user_id, email_item, extracted, category_type_id, schema, existing_items)
 
-        # Backfill against the rest of this user's already-synced mail — without this, a brand new
-        # category would only ever have the 1-2 emails picked as wizard references, even though older
-        # matching mail already sitting in their inbox should show up immediately too.
-        backfilled_count = backfill_category_type(user_id, category_type_id, schema)
+        # Classification and extraction can exceed API Gateway's response window on a large mailbox.
+        # Queue it after persistence so the wizard can finish immediately while historical cards fill in.
+        backfill_queued = True
+        try:
+            _enqueue_category_backfill(user_id, category_type_id)
+        except Exception as error:
+            backfill_queued = False
+            warnings.append('The category was created, but historical email backfill could not be started.')
+            print(f"Error enqueueing category backfill: {str(error)}")
 
         return {
             "statusCode": 200,
@@ -2701,7 +2739,7 @@ def handle_create_category_type(event):
             "body": json.dumps({
                 "categoryType": {**schema, "id": category_type_id, "isBuiltIn": False, "schemaVersion": 1},
                 "warnings": warnings,
-                "backfilledCount": backfilled_count
+                "backfillQueued": backfill_queued
             }, ensure_ascii=False)
         }
     except Exception as e:

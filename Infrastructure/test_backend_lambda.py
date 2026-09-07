@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import unittest
 from email import policy
@@ -104,6 +105,58 @@ class CategoryDraftSanitizerTests(unittest.TestCase):
         self.assertEqual(schema['completionRule'], {'type': 'date_passed', 'dateField': 'eventDate'})
         self.assertIsNone(schema['atRiskRule'])
         self.assertIn('completionRule was moved out of fields and restored as a lifecycle rule.', warnings)
+
+    def test_category_creation_queues_backfill_after_persisting(self):
+        event = {'body': json.dumps({
+            'draft': {
+                'label': 'Events',
+                'classifierDescription': 'Event invitations',
+                'fields': [{'key': 'eventDate', 'label': 'Event Date', 'type': 'date'}],
+            },
+        })}
+        with patch.object(backend_lambda, 'get_authorized_user_id', return_value='user-1'), \
+                patch.object(backend_lambda.category_types_table, 'put_item') as put_item, \
+                patch.object(backend_lambda, '_enqueue_category_backfill') as enqueue:
+            response = backend_lambda.handle_create_category_type(event)
+
+        self.assertEqual(response['statusCode'], 200)
+        category_type_id = json.loads(response['body'])['categoryType']['id']
+        put_item.assert_called_once()
+        enqueue.assert_called_once_with('user-1', category_type_id)
+
+    def test_category_creation_succeeds_when_backfill_cannot_be_queued(self):
+        event = {'body': json.dumps({
+            'draft': {
+                'label': 'Events',
+                'classifierDescription': 'Event invitations',
+                'fields': [{'key': 'eventDate', 'label': 'Event Date', 'type': 'date'}],
+            },
+        })}
+        with patch.object(backend_lambda, 'get_authorized_user_id', return_value='user-1'), \
+                patch.object(backend_lambda.category_types_table, 'put_item'), \
+                patch.object(backend_lambda, '_enqueue_category_backfill', side_effect=RuntimeError('denied')):
+            response = backend_lambda.handle_create_category_type(event)
+
+        body = json.loads(response['body'])
+        self.assertEqual(response['statusCode'], 200)
+        self.assertFalse(body['backfillQueued'])
+        self.assertIn('The category was created, but historical email backfill could not be started.', body['warnings'])
+
+    def test_backfill_worker_uses_persisted_schema(self):
+        row = {
+            'label': 'Events',
+            'fields': [{'key': 'eventDate', 'label': 'Event Date', 'type': 'date'}],
+        }
+        with patch.object(backend_lambda.category_types_table, 'get_item', return_value={'Item': row}), \
+                patch.object(backend_lambda, 'backfill_category_type', return_value=3) as backfill:
+            response = backend_lambda.lambda_handler({
+                'action': 'backfill-category',
+                'userId': 'user-1',
+                'categoryTypeId': 'custom#events',
+            }, None)
+
+        self.assertEqual(json.loads(response['body'])['backfilledCount'], 3)
+        backfill.assert_called_once()
 
 
 if __name__ == '__main__':
