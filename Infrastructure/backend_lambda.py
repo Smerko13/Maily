@@ -233,13 +233,28 @@ def _sanitize_category_draft(raw):
     if not classifier_description:
         warnings.append('classifierDescription was empty — this category will rarely be auto-detected until one is added.')
 
+    raw_fields = raw.get('fields') or []
+    recovered_rules = {}
+    for field in raw_fields:
+        if not isinstance(field, dict) or field.get('key') not in ('completionRule', 'atRiskRule'):
+            continue
+        candidate = {key: value for key, value in field.items()
+                     if key not in ('key', 'label', 'hint', 'sticky', 'format')}
+        if _sanitize_rule(candidate, {
+            str(item.get('key') or '').strip()
+            for item in raw_fields
+            if isinstance(item, dict) and item.get('key') not in ('completionRule', 'atRiskRule')
+        }):
+            recovered_rules[field['key']] = candidate
+            warnings.append(f'{field["key"]} was moved out of fields and restored as a lifecycle rule.')
+
     seen_keys = set()
     fields = []
-    for f in (raw.get('fields') or [])[:12]:
+    for f in raw_fields[:12]:
         if not isinstance(f, dict):
             continue
         key = str(f.get('key') or '').strip()
-        if not _FIELD_KEY_RE.match(key) or key in seen_keys:
+        if key in ('completionRule', 'atRiskRule') or not _FIELD_KEY_RE.match(key) or key in seen_keys:
             continue
 
         raw_type = f.get('type')
@@ -301,8 +316,8 @@ def _sanitize_category_draft(raw):
 
     title_template = str(raw.get('titleTemplate') or '').strip()[:200] or label
 
-    completion_rule = _sanitize_rule(raw.get('completionRule'), field_keys)
-    at_risk_rule = _sanitize_rule(raw.get('atRiskRule'), field_keys)
+    completion_rule = _sanitize_rule(raw.get('completionRule') or recovered_rules.get('completionRule'), field_keys)
+    at_risk_rule = _sanitize_rule(raw.get('atRiskRule') or recovered_rules.get('atRiskRule'), field_keys)
     if raw.get('completionRule') and not completion_rule:
         warnings.append('completionRule was invalid and was dropped.')
     if raw.get('atRiskRule') and not at_risk_rule:
@@ -2495,8 +2510,9 @@ def _build_category_generation_prompt(description, reference_emails, current_dra
         "Never create a field to track whether the item is done/completed/finished — that state is "
         "always computed automatically from completionRule against the other fields, and an extraction "
         "call can't reliably know it anyway (e.g. it can't know 'has this date passed yet' at the "
-        "moment an email arrives). Only ask for fields whose values actually come from the email's "
-        "own content."
+        "moment an email arrives). The fields array must contain only values extracted from email "
+        "content; never put completionRule or atRiskRule inside fields. Those two properties belong "
+        "only at the top level of the schema."
     )
 
     if current_draft is not None:

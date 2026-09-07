@@ -84,5 +84,27 @@ class ComposeSendTests(unittest.TestCase):
             backend_lambda._decode_compose_attachments(attachments)
 
 
+class CategoryDraftSanitizerTests(unittest.TestCase):
+    def test_recovers_lifecycle_rule_misplaced_in_fields(self):
+        raw = {
+            'label': 'Events',
+            'classifierDescription': 'Conference and event invitations',
+            'fields': [
+                {'key': 'eventName', 'label': 'Event Name', 'type': 'string'},
+                {'key': 'eventDate', 'label': 'Event Date', 'type': 'date'},
+                {'key': 'completionRule', 'label': 'Completion Rule', 'type': 'date_passed', 'dateField': 'eventDate'},
+                {'key': 'atRiskRule', 'label': 'At Risk Rule', 'type': 'invalid'},
+            ],
+            'matchKeys': ['eventName', 'eventDate'],
+        }
+
+        schema, warnings = backend_lambda._sanitize_category_draft(raw)
+
+        self.assertEqual([field['key'] for field in schema['fields']], ['eventName', 'eventDate'])
+        self.assertEqual(schema['completionRule'], {'type': 'date_passed', 'dateField': 'eventDate'})
+        self.assertIsNone(schema['atRiskRule'])
+        self.assertIn('completionRule was moved out of fields and restored as a lifecycle rule.', warnings)
+
+
 if __name__ == '__main__':
     unittest.main()
