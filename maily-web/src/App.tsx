@@ -917,6 +917,7 @@ function App() {
 
   // Fetch a presigned S3 download URL for an attachment and open it
   const downloadAttachment = async (emailId: string, attachment: Attachment) => {
+    const downloadWindow = window.open('', '_blank');
     setAttachmentLoadingId(attachment.id);
     try {
       const session = await fetchAuthSession();
@@ -927,8 +928,10 @@ function App() {
       const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      window.open(data.download_url, '_blank');
+      if (downloadWindow) downloadWindow.location.href = data.download_url;
+      else window.location.href = data.download_url;
     } catch (error) {
+      downloadWindow?.close();
       console.error('Error downloading attachment:', error);
       showToast(`Failed to download ${attachment.filename}. Please try again.`, 'error');
     } finally {
@@ -1595,7 +1598,8 @@ function App() {
                     onSent={() => {
                       showToast('Email sent.', 'success');
                       setComposeSeed(undefined);
-                      setActiveTab('inbox');
+                      setActiveTab('sent');
+                      fetchFromBackend();
                     }}
                   />
                 </div>
