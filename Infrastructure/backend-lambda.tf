@@ -19,7 +19,7 @@ resource "aws_lambda_function" "maily_backend_lambda" {
     environment {
       variables = {
         SECRET_NAME          = aws_secretsmanager_secret.maily_secrets.name
-        EXPORTS_BUCKET_NAME  = aws_s3_bucket.maily_exports.bucket
+        EXPORTS_BUCKET_NAME  = local.exports_bucket_name
       }
     }
 }

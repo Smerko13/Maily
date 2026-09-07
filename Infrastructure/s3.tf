@@ -1,14 +1,9 @@
-resource "aws_s3_bucket" "maily_exports" {
-  bucket = "maily-exports-${data.aws_caller_identity.current.account_id}"
-
-  tags = {
-    Project     = "Maily"
-    Environment = "Development"
-  }
+locals {
+  exports_bucket_name = "maily-exports-${data.aws_caller_identity.current.account_id}"
 }
 
 resource "aws_s3_bucket_public_access_block" "maily_exports_block" {
-  bucket = aws_s3_bucket.maily_exports.id
+  bucket = local.exports_bucket_name
 
   block_public_acls       = true
   block_public_policy     = true
@@ -17,7 +12,7 @@ resource "aws_s3_bucket_public_access_block" "maily_exports_block" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "maily_exports_lifecycle" {
-  bucket = aws_s3_bucket.maily_exports.id
+  bucket = local.exports_bucket_name
 
   rule {
     id     = "expire-exports"
@@ -33,5 +28,5 @@ data "aws_caller_identity" "current" {}
 
 output "exports_bucket_name" {
   description = "S3 bucket used for email summary exports"
-  value       = aws_s3_bucket.maily_exports.bucket
+  value       = local.exports_bucket_name
 }

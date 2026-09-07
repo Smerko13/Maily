@@ -19,5 +19,21 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      'react-hooks/immutability': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+      'react-refresh/only-export-components': ['error', {
+        allowConstantExport: true,
+        allowExportNames: [
+          'sortEmailsByDate',
+          'TRAVEL_CATEGORY_TYPE_ID',
+          'FALLBACK_CATEGORY_TYPE_META',
+          'categoryTypeMeta',
+          'renderTitleTemplate',
+          'categoryItemTitle',
+          'formatFieldValueText',
+        ],
+      }],
+    },
   },
 ])

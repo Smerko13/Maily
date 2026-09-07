@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Authenticator } from "@aws-amplify/ui-react";
-import { fetchAuthSession } from 'aws-amplify/auth';
+import { fetchAuthSession, type AuthUser } from 'aws-amplify/auth';
 import { useGoogleLogin } from '@react-oauth/google';
 import CategoryWizard from './components/CategoryWizard';
 import EmailSelectionPicker from './components/EmailSelectionPicker';
@@ -1339,7 +1339,7 @@ function App() {
     .sort((left, right) => left.localeCompare(right));
 
   //The UI / JSX
-  const renderApp = ({ signOut, user }: { signOut?: (data?: any) => void; user?: any }) => (
+  const renderApp = ({ signOut, user }: { signOut?: () => void; user?: AuthUser }) => (
           <div className="app-layout" data-theme={theme}>
 
           {/* Hamburger toggle — floats in place once the sidebar is collapsed */}
