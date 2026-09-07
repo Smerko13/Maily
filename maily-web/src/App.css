@@ -2288,6 +2288,10 @@
   font-family: var(--font-body);
 }
 
+.login-shell:has(.app-layout) {
+  padding: 0;
+}
+
 .login-header {
   text-align: center;
   padding: 8px 0 24px;
