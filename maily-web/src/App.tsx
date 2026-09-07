@@ -640,14 +640,7 @@ function App() {
         }
 
         const data = await response.json();
-        // Add the newly connected account to the list (avoid duplicates)
-        if (data.email) {
-          setConnectedAccounts(prev =>
-            prev.some(a => a.email === data.email && a.provider === 'gmail')
-              ? prev
-              : [...prev, { email: data.email, provider: 'gmail' as const }]
-          );
-        }
+        await loadConnectedAccounts();
         showToast(`Connected ${data.email ?? 'Google account'} successfully!`, 'success');
         fetchFromBackend(); // pull the new account's mail in immediately rather than waiting for a manual sync
 
